@@ -1,0 +1,6 @@
+{
+  "name": "VoxMitra",
+  "description": "VoxMitra is a self-service AI voice-agent platform for businesses to create, test, deploy, and monitor voice employees.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
