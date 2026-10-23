@@ -30,16 +30,13 @@ import {
 import { api } from '../api/client.ts';
 import { Agent, CallbackItem, CallRecord, DashboardStats, WalletOverviewData } from '../types.ts';
 import { CallDetailsModal } from '../components/modals/CallDetailsModal.tsx';
-import { OnboardingModal } from '../components/modals/OnboardingModal.tsx';
 import { AddCreditsModal } from '../components/modals/AddCreditsModal.tsx';
-import { useAuth } from '../context/AuthContext.tsx';
 
 interface DashboardPageProps {
   onNavigate: (page: string, params?: any) => void;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
-  const { business } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [recentCalls, setRecentCalls] = useState<CallRecord[]>([]);
@@ -52,12 +49,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
   // Selected Call for Modal
   const [selectedCall, setSelectedCall] = useState<CallRecord | null>(null);
-
-  // Onboarding Modal State
-  const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [onboardingDismissed, setOnboardingDismissed] = useState(
-    localStorage.getItem('voxmitra_setup_banner_dismissed') === 'true'
-  );
 
   const loadData = async () => {
     try {
@@ -233,46 +224,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* 2. ONBOARDING / SETUP BANNER (Collapsible) */}
-      {!onboardingDismissed && (
-        <div className="p-4 sm:p-5 rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 text-white border border-slate-800 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-400/30">
-                Setup Progress: 3 of 4 Done
-              </span>
-              <span className="text-xs text-slate-400 font-mono">
-                {business?.name || 'Apex Health Services'}
-              </span>
-            </div>
-            <h3 className="text-sm sm:text-base font-bold text-white">
-              Connect your verified Indian virtual line (Exotel) to handle real phone numbers.
-            </h3>
-            <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
-              Your autonomous AI employees are ready. You can test voice responses in your browser immediately or connect your carrier SIP trunk.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2.5 shrink-0">
-            <button
-              onClick={() => setOnboardingOpen(true)}
-              className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-xs"
-            >
-              Open Setup Guide
-            </button>
-            <button
-              onClick={() => {
-                setOnboardingDismissed(true);
-                localStorage.setItem('voxmitra_setup_banner_dismissed', 'true');
-              }}
-              className="px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* 2.5 LOW PREPAID BALANCE WARNING BANNER */}
       {walletData && walletData.wallet.available_balance_minor < (walletData.billingConfig?.low_balance_alert_threshold_minor || 20000) && (
         <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-950 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
@@ -290,7 +241,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                 </span>
               </div>
               <p className="text-xs text-amber-900/90 mt-1 leading-relaxed">
-                Autonomous inbound receptionist and outbound dialing will pause automatically when credits reach zero to prevent telecommunication overdraft. Recharge credits or configure Auto Top-Up.
+                Recharge credits manually to add wallet funds. Automatic recharge requires payment authorization and backend support, which are not connected yet.
               </p>
             </div>
           </div>
@@ -306,7 +257,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
               onClick={() => onNavigate('wallet')}
               className="px-3 py-2 rounded-lg text-xs font-semibold text-amber-800 hover:bg-amber-100/80 transition-colors"
             >
-              Configure Auto Top-Up
+              View recharge options
             </button>
           </div>
         </div>
@@ -324,10 +275,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
                   Prepaid Telephony Wallet
                 </span>
-                {walletData.autoTopUp.enabled && walletData.autoTopUp.mandate_status === 'active' ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    <Zap className="w-2.5 h-2.5 text-emerald-600 fill-emerald-600" />
-                    Auto Top-Up Active (₹{(walletData.autoTopUp.recharge_amount_minor / 100).toFixed(0)} when &lt; ₹{(walletData.autoTopUp.threshold_minor / 100).toFixed(0)})
+                {walletData.autoTopUp.enabled ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                    <AlertTriangle className="h-2.5 w-2.5 text-amber-600" />
+                    Automatic recharge setup required
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">
@@ -797,19 +748,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         <CallDetailsModal
           call={selectedCall}
           onClose={() => setSelectedCall(null)}
-          onNavigateToTesting={(agentId) => onNavigate('testing', { agentId })}
-        />
-      )}
-
-      {onboardingOpen && (
-        <OnboardingModal
-          isOpen={onboardingOpen}
-          onClose={() => setOnboardingOpen(false)}
-          onComplete={() => {
-            setOnboardingOpen(false);
-            setOnboardingDismissed(true);
-            loadData();
-          }}
           onNavigateToTesting={(agentId) => onNavigate('testing', { agentId })}
         />
       )}

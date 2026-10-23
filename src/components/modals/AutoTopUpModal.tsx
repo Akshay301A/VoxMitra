@@ -1,18 +1,7 @@
-import React, { useState } from 'react';
-import {
-  X,
-  Zap,
-  ShieldCheck,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  Check,
-  CreditCard,
-  AlertTriangle,
-  RotateCcw,
-} from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { AlertCircle, AlertTriangle, CheckCircle2, Loader2, X, Zap } from 'lucide-react';
 import { api } from '../../api/client.ts';
-import { AutoTopUpSettings } from '../../types.ts';
+import type { AutoTopUpSettings } from '../../types.ts';
 
 interface AutoTopUpModalProps {
   isOpen: boolean;
@@ -21,300 +10,172 @@ interface AutoTopUpModalProps {
   onSuccess: (settings: AutoTopUpSettings) => void;
 }
 
+const inputClass =
+  'mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/20';
+
 export const AutoTopUpModal: React.FC<AutoTopUpModalProps> = ({
   isOpen,
   onClose,
   settings,
   onSuccess,
 }) => {
-  const [enabled, setEnabled] = useState(settings.enabled);
-  const [thresholdMinor, setThresholdMinor] = useState(settings.threshold_minor || 20000);
-  const [rechargeAmountMinor, setRechargeAmountMinor] = useState(settings.recharge_amount_minor || 100000);
-  const [monthlyCapINR, setMonthlyCapINR] = useState(
-    Math.round((settings.monthly_cap_minor || 500000) / 100).toString()
-  );
-  const [mandateStatus, setMandateStatus] = useState(settings.mandate_status || 'none');
-
+  const [thresholdINR, setThresholdINR] = useState((settings.threshold_minor / 100 || 200).toString());
+  const [rechargeINR, setRechargeINR] = useState((settings.recharge_amount_minor / 100 || 1000).toString());
+  const [monthlyCapINR, setMonthlyCapINR] = useState((settings.monthly_cap_minor / 100 || 5000).toString());
+  const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [authorizingMandate, setAuthorizingMandate] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setThresholdINR((settings.threshold_minor / 100 || 200).toString());
+    setRechargeINR((settings.recharge_amount_minor / 100 || 1000).toString());
+    setMonthlyCapINR((settings.monthly_cap_minor / 100 || 5000).toString());
+    setConsent(false);
+    setError('');
+    setSaved(false);
+  }, [isOpen, settings]);
 
   if (!isOpen) return null;
 
-  const thresholds = [
-    { label: '₹100', minor: 10000 },
-    { label: '₹200 (Recommended)', minor: 20000 },
-    { label: '₹500', minor: 50000 },
-  ];
+  const threshold = Number(thresholdINR);
+  const recharge = Number(rechargeINR);
+  const monthlyCap = Number(monthlyCapINR);
+  const validAmounts =
+    Number.isFinite(threshold) &&
+    Number.isFinite(recharge) &&
+    Number.isFinite(monthlyCap) &&
+    threshold > 0 &&
+    recharge > 0 &&
+    monthlyCap > 0 &&
+    monthlyCap >= recharge &&
+    threshold <= 100000 &&
+    recharge <= 100000 &&
+    monthlyCap <= 500000;
 
-  const rechargeAmounts = [
-    { label: '₹500', minor: 50000 },
-    { label: '₹1,000 (Recommended)', minor: 100000 },
-    { label: '₹2,500', minor: 250000 },
-  ];
-
-  const handleAuthorizeMandate = async () => {
-    try {
-      setAuthorizingMandate(true);
-      setError(null);
-      const res = await api.authorizePaymentMandate();
-      if (res.success) {
-        setMandateStatus(res.settings.mandate_status);
-        setEnabled(true);
-        setSuccessMsg('e-Mandate authorized successfully! Auto Top-Up is now active.');
-        onSuccess(res.settings);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to authorize mandate.');
-    } finally {
-      setAuthorizingMandate(false);
+  const handleSavePreferences = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError('');
+    setSaved(false);
+    if (!validAmounts) {
+      setError('Enter positive amounts. The monthly cap must be at least one recharge and cannot exceed ₹5,00,000.');
+      return;
     }
-  };
-
-  const handleCancelMandate = async () => {
-    try {
-      setAuthorizingMandate(true);
-      setError(null);
-      const res = await api.cancelPaymentMandate();
-      if (res.success) {
-        setMandateStatus(res.settings.mandate_status);
-        setEnabled(false);
-        setSuccessMsg('Payment mandate revoked. Auto Top-Up has been disabled.');
-        onSuccess(res.settings);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to cancel mandate.');
-    } finally {
-      setAuthorizingMandate(false);
-    }
-  };
-
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const capMinor = Math.round(parseFloat(monthlyCapINR || '5000') * 100);
-
-    if (enabled && mandateStatus !== 'active') {
-      setError('An active payment mandate is required before enabling Auto Top-Up. Please authorize e-Mandate below.');
+    if (!consent) {
+      setError('Confirm that you understand these are saved preferences only and do not authorize automatic charges.');
       return;
     }
 
     try {
       setLoading(true);
-      setError(null);
       const updated = await api.updateAutoTopUpSettings({
-        enabled,
-        threshold_minor: thresholdMinor,
-        recharge_amount_minor: rechargeAmountMinor,
-        monthly_cap_minor: capMinor,
+        enabled: false,
+        threshold_minor: Math.round(threshold * 100),
+        recharge_amount_minor: Math.round(recharge * 100),
+        monthly_cap_minor: Math.round(monthlyCap * 100),
       });
       onSuccess(updated);
-      onClose();
-    } catch (err: any) {
-      setError(err.message || 'Failed updating auto top-up settings.');
+      setSaved(true);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Could not save recharge preferences. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs font-sans">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-        
-        {/* Header */}
-        <div className="px-6 py-4 bg-slate-950 text-white flex items-center justify-between border-b border-slate-800">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30">
-              <Zap className="w-4 h-4" />
-            </div>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !loading) onClose();
+      }}
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auto-recharge-title"
+        className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl"
+      >
+        <header className="flex items-center justify-between border-b border-slate-800 bg-slate-950 px-5 py-4 text-white sm:px-6">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-blue-500/30 bg-blue-600/20 text-blue-300">
+              <Zap className="h-5 w-5" />
+            </span>
             <div>
-              <h3 className="text-sm font-bold text-white">Auto Top-Up Settings</h3>
-              <p className="text-[11px] text-slate-400">
-                Never miss an inbound or outbound customer call due to low balance
-              </p>
+              <h2 id="auto-recharge-title" className="text-base font-semibold">Automatic Wallet Recharge</h2>
+              <p className="mt-0.5 text-xs text-slate-400">Optional and separate from manual recharge</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-4 h-4" />
+          <button type="button" onClick={onClose} aria-label="Close automatic recharge settings" className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400">
+            <X className="h-4 w-4" />
           </button>
-        </div>
+        </header>
 
-        {/* Content */}
-        <form onSubmit={handleSaveSettings} className="p-6 space-y-5">
+        <form onSubmit={handleSavePreferences} className="space-y-5 p-5 sm:p-6">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <div className="flex gap-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+              <div>
+                <p className="text-sm font-semibold text-amber-950">Setup required · authorization is not connected</p>
+                <p className="mt-1 text-xs leading-relaxed text-amber-900">
+                  You can save your preferred limits, but this workspace does not have a real payment authorization or recurring-charge flow. Saving will not activate automatic charges.
+                </p>
+              </div>
+            </div>
+          </div>
+
           {error && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+            <div role="alert" className="flex gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /> {error}
+            </div>
+          )}
+          {saved && (
+            <div role="status" className="flex gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> Preferences saved. Automatic recharge remains disabled until real authorization and backend support are connected.
             </div>
           )}
 
-          {successMsg && (
-            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-start gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
-              <span>{successMsg}</span>
-            </div>
-          )}
-
-          {/* Enable / Disable Switch */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-            <div>
-              <p className="text-xs font-bold text-slate-900">Enable Automatic Replenishment</p>
-              <p className="text-[11px] text-slate-500 mt-0.5">
-                Automatically recharge wallet when available credits drop below your threshold
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setEnabled(!enabled)}
-              className={`w-11 h-6 rounded-full transition-colors relative focus:outline-hidden ${
-                enabled ? 'bg-blue-600' : 'bg-slate-300'
-              }`}
-            >
-              <span
-                className={`w-5 h-5 rounded-full bg-white shadow-xs block transition-transform absolute top-0.5 ${
-                  enabled ? 'left-5.5' : 'left-0.5'
-                }`}
-              />
-            </button>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-xs font-semibold text-slate-700">
+              Low-balance trigger (INR)
+              <input type="number" inputMode="decimal" min="1" max="100000" step="0.01" required value={thresholdINR} onChange={(event) => { setThresholdINR(event.target.value); setSaved(false); }} className={inputClass} />
+              <span className="mt-1 block font-normal text-slate-500">Proposed trigger: ₹{Number(thresholdINR || 0).toLocaleString('en-IN')}</span>
+            </label>
+            <label className="text-xs font-semibold text-slate-700">
+              Automatic recharge amount (INR)
+              <input type="number" inputMode="decimal" min="1" max="100000" step="0.01" required value={rechargeINR} onChange={(event) => { setRechargeINR(event.target.value); setSaved(false); }} className={inputClass} />
+              <span className="mt-1 block font-normal text-slate-500">One proposed charge: ₹{Number(rechargeINR || 0).toLocaleString('en-IN')}</span>
+            </label>
+            <label className="text-xs font-semibold text-slate-700 sm:col-span-2">
+              Monthly spending cap (INR)
+              <input type="number" inputMode="decimal" min="1" max="500000" step="0.01" required value={monthlyCapINR} onChange={(event) => { setMonthlyCapINR(event.target.value); setSaved(false); }} className={inputClass} />
+              <span className="mt-1 block font-normal text-slate-500">Maximum proposed automatic recharge spend per month. Must be at least one recharge.</span>
+            </label>
           </div>
 
-          {/* Threshold Selection */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Low-Balance Trigger Threshold
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {thresholds.map((t) => (
-                <button
-                  key={t.minor}
-                  type="button"
-                  onClick={() => setThresholdMinor(t.minor)}
-                  className={`p-2.5 text-xs rounded-xl border text-center transition-all ${
-                    thresholdMinor === t.minor
-                      ? 'border-blue-600 bg-blue-50/60 font-bold text-blue-900 ring-1 ring-blue-600'
-                      : 'border-slate-200 hover:border-slate-300 bg-white text-slate-700'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Recharge Amount Selection */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Recharge Top-Up Amount
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {rechargeAmounts.map((r) => (
-                <button
-                  key={r.minor}
-                  type="button"
-                  onClick={() => setRechargeAmountMinor(r.minor)}
-                  className={`p-2.5 text-xs rounded-xl border text-center transition-all ${
-                    rechargeAmountMinor === r.minor
-                      ? 'border-blue-600 bg-blue-50/60 font-bold text-blue-900 ring-1 ring-blue-600'
-                      : 'border-slate-200 hover:border-slate-300 bg-white text-slate-700'
-                  }`}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Monthly Cap */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Maximum Monthly Recharge Cap (INR)
-            </label>
-            <div className="relative">
-              <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-xs text-slate-400 font-mono font-bold">
-                ₹
-              </span>
-              <input
-                type="number"
-                min="500"
-                max="500000"
-                value={monthlyCapINR}
-                onChange={(e) => setMonthlyCapINR(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 text-xs border border-slate-300 rounded-xl focus:border-blue-600 focus:ring-1 focus:ring-blue-600 outline-hidden font-mono"
-              />
-            </div>
-            <p className="text-[10px] text-slate-400 mt-1">
-              Prevents unexpected charges. VoxMitra will pause auto top-ups once this monthly limit is reached.
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Proposed automatic charge summary</p>
+            <p className="mt-2 text-sm leading-relaxed text-slate-800">
+              If a future authorized service is connected: when the wallet falls below <strong>₹{Number(thresholdINR || 0).toLocaleString('en-IN')}</strong>, it would request a recharge of <strong>₹{Number(rechargeINR || 0).toLocaleString('en-IN')}</strong>, capped at <strong>₹{Number(monthlyCapINR || 0).toLocaleString('en-IN')}</strong> per month. No charge can be made now.
             </p>
           </div>
 
-          {/* e-Mandate Authorization Status Box */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                <CreditCard className="w-3.5 h-3.5 text-blue-600" />
-                <span>e-Mandate / UPI AutoPay Authorization</span>
-              </span>
-              <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                mandateStatus === 'active'
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : 'bg-amber-100 text-amber-800'
-              }`}>
-                {mandateStatus === 'active' ? 'Authorized Active' : 'Setup Required'}
-              </span>
-            </div>
+          <label className="flex items-start gap-2.5 rounded-xl border border-slate-200 p-3 text-xs leading-relaxed text-slate-700">
+            <input type="checkbox" checked={consent} onChange={(event) => { setConsent(event.target.checked); setError(''); }} className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+            <span>I understand this saves my proposed recharge preferences only. It does not authorize a payment method or enable automatic charging.</span>
+          </label>
 
-            <p className="text-[11px] text-slate-500 leading-relaxed">
-              Auto top-up requires explicit recurring payment authorization under RBI e-Mandate guidelines.
-              Saving settings does <span className="font-semibold text-slate-900">NOT</span> charge your card immediately.
-            </p>
-
-            <div className="pt-1 flex items-center gap-2">
-              {mandateStatus === 'active' ? (
-                <button
-                  type="button"
-                  disabled={authorizingMandate}
-                  onClick={handleCancelMandate}
-                  className="py-1.5 px-3 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors"
-                >
-                  Revoke Mandate
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={authorizingMandate}
-                  onClick={handleAuthorizeMandate}
-                  className="py-1.5 px-3 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition-colors flex items-center gap-1.5"
-                >
-                  {authorizingMandate && <Loader2 className="w-3 h-3 animate-spin" />}
-                  <span>Authorize e-Mandate</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={onClose}
-              className="py-2 px-3.5 rounded-xl text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="py-2 px-5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-all shadow-xs flex items-center gap-1.5"
-            >
-              {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              <span>Save Settings</span>
+          <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
+            <button type="button" onClick={onClose} disabled={loading} className="rounded-xl px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50">Cancel</button>
+            <button type="submit" disabled={loading || !validAmounts || !consent} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50">
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              Save preferences · remain disabled
             </button>
           </div>
         </form>
-      </div>
+      </section>
     </div>
   );
 };

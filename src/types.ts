@@ -1,3 +1,5 @@
+import type { AgentPlan } from './agents/agentPlan.types.ts';
+
 export type AgentType = 'instant_lead' | 'bulk_caller' | 'inbound_receptionist';
 export type AgentStatus = 'active' | 'paused' | 'draft';
 
@@ -40,6 +42,7 @@ export interface Agent {
   agent_type: AgentType;
   description: string;
   status: AgentStatus;
+  inbound_phone_number?: string;
   total_calls: number;
   created_at: string;
   updated_at: string;
@@ -58,6 +61,7 @@ export interface AgentConfig {
   voice_settings: {
     stability: number;
     similarity_boost: number;
+    speaking_rate?: number;
   };
   max_duration_seconds: number;
   transfer_enabled: boolean;
@@ -66,6 +70,7 @@ export interface AgentConfig {
   callback_instructions: string;
   contact_fields_to_collect: ContactField[];
   business_faqs: FAQItem[];
+  agent_plan?: AgentPlan;
   webhook_url: string;
   created_at: string;
   updated_at: string;
@@ -184,11 +189,20 @@ export interface ElevenLabsVoice {
 export interface OnboardingData {
   businessName: string;
   businessCategory: string;
-  primaryUseCase: 'inbound_receptionist' | 'instant_lead' | 'bulk_caller';
-  preferredLanguage: string;
-  preferredVoice: string;
+  website?: string;
+  location?: string;
+  timezone?: string;
+  goals?: string[];
+  startingPoint?: 'agent' | 'dashboard';
+  pendingAgentStart?: boolean;
+  status: 'not_started' | 'in_progress' | 'completed' | 'skipped';
   step: number;
+  tourStep?: number;
   completed: boolean;
+  tourCompleted: boolean;
+  primaryUseCase?: 'inbound_receptionist' | 'instant_lead' | 'bulk_caller';
+  preferredLanguage?: string;
+  preferredVoice?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -329,4 +343,3 @@ export interface WalletOverviewData {
   unreadNotificationsCount: number;
   recentTransactions: WalletTransaction[];
 }
-

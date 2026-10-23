@@ -28,12 +28,17 @@ import { VoxMitraLogo } from '../common/VoxMitraLogo.tsx';
 import { api } from '../../api/client.ts';
 import { WalletOverviewData } from '../../types.ts';
 import { AddCreditsModal } from '../modals/AddCreditsModal.tsx';
+import { ProductTour } from '../onboarding/ProductTour.tsx';
 
 interface AppLayoutProps {
   children: React.ReactNode;
   currentPage: string;
   onNavigate: (page: string, params?: any) => void;
   breadcrumbs?: string[];
+  tourOpen: boolean;
+  tourStartStep: number;
+  onTourOpen: () => void;
+  onTourFinish: () => void;
 }
 
 export const AppLayout: React.FC<AppLayoutProps> = ({
@@ -41,6 +46,10 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   currentPage,
   onNavigate,
   breadcrumbs = ['Console'],
+  tourOpen,
+  tourStartStep,
+  onTourOpen,
+  onTourFinish,
 }) => {
   const { user, business, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -154,6 +163,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 return (
                   <button
                     key={item.id}
+                    data-tour-target={`nav-${item.id}`}
                     onClick={() => {
                       onNavigate(item.id);
                       setMobileMenuOpen(false);
@@ -172,6 +182,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             </div>
           ))}
         </div>
+
+        <button type="button" onClick={onTourOpen} className="mx-3 mb-3 inline-flex items-center gap-2 rounded-lg border border-blue-500/25 bg-blue-500/10 px-3 py-2.5 text-left text-xs font-semibold text-blue-200 hover:bg-blue-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400">
+          <Sparkles className="h-4 w-4 shrink-0" />
+          <span>Take Product Tour</span>
+        </button>
 
         {/* Infrastructure Status Widget */}
         <div className="p-3 mx-3 mb-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-1.5 text-[11px]">
@@ -254,7 +269,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 const balanceINR = walletOverview ? (walletOverview.wallet.available_balance_minor / 100) : 4250.00;
                 const thresholdMinor = walletOverview?.billingConfig?.low_balance_alert_threshold_minor || 20000;
                 const isLow = walletOverview ? walletOverview.wallet.available_balance_minor < thresholdMinor : false;
-                const autoActive = !!(walletOverview?.autoTopUp?.enabled && walletOverview?.autoTopUp?.mandate_status === 'active');
 
                 return (
                   <div className="flex items-center gap-1.5">
@@ -271,12 +285,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                       <span className="font-mono tabular-nums font-bold">
                         ₹{balanceINR.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
-                      {autoActive ? (
-                        <span className="hidden xl:inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold border border-emerald-200">
-                          <Zap className="w-2.5 h-2.5 text-emerald-600 fill-emerald-600" />
-                          Auto
-                        </span>
-                      ) : isLow ? (
+                      {isLow ? (
                         <span className="hidden xl:inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold border border-amber-200">
                           <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
                           Low
@@ -334,6 +343,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         onSuccess={(updatedWallet) => {
           setAddCreditsModalOpen(false);
           fetchWallet();
+        }}
+      />
+      <ProductTour
+        isOpen={tourOpen}
+        currentPage={currentPage}
+        startAtStep={tourStartStep}
+        onNavigate={onNavigate}
+        onShowNavigation={setMobileMenuOpen}
+        onFinish={() => {
+          setMobileMenuOpen(false);
+          onTourFinish();
         }}
       />
     </div>

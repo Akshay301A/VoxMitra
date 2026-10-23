@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: voxmitra
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: VOXMITRA_DATABASE
+        value: json
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: EXOTEL_ACCOUNT_SID
+        sync: false
+      - key: EXOTEL_STREAM_USERNAME
+        sync: false
+      - key: EXOTEL_STREAM_PASSWORD
+        sync: false

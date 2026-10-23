@@ -136,25 +136,34 @@ export class ExotelAdapter implements TelephonyAdapter {
           callSid: '',
           status: 'failed',
           provider: 'exotel',
-          message: `Exotel call initiation rejected: ${responseData?.RestException?.Message || response.statusText}`,
+          message: 'Exotel rejected the call initiation request.',
         };
       }
 
       const call = responseData?.Call;
+      if (typeof call?.Sid !== 'string' || !call.Sid) {
+        return {
+          success: false,
+          callSid: '',
+          status: 'failed',
+          provider: 'exotel',
+          message: 'Exotel response did not include a verified call identifier.',
+        };
+      }
       return {
         success: true,
-        callSid: call?.Sid || `exo_${Date.now()}`,
+        callSid: call.Sid,
         status: 'initiated',
         provider: 'exotel',
         message: 'Call successfully dispatched to Exotel telecom trunk.',
       };
-    } catch (err: any) {
+    } catch {
       return {
         success: false,
         callSid: '',
         status: 'failed',
         provider: 'exotel',
-        message: `Exotel connection failed: ${err.message}`,
+        message: 'Exotel connection failed.',
       };
     }
   }
@@ -194,7 +203,7 @@ export class ExotelAdapter implements TelephonyAdapter {
 
       return {
         callSid,
-        status: statusMap[call?.Status] || 'completed',
+        status: statusMap[call?.Status] || 'failed',
         durationSeconds: parseInt(call?.Duration || '0', 10),
         recordingUrl: call?.RecordingUrl,
       };
@@ -204,21 +213,22 @@ export class ExotelAdapter implements TelephonyAdapter {
   }
 
   async terminateCall(callSid: string): Promise<boolean> {
-    // Exotel call hangup
-    return true;
+    void callSid;
+    return false;
   }
 
   verifyWebhook(headers: Record<string, string>, body: any): boolean {
-    // Signature verification logic
-    return true;
+    void headers;
+    void body;
+    return false;
   }
 
   parseWebhook(body: any): NormalizedWebhookEvent {
     const callSid = body.CallSid || body.Sid || '';
-    const status = body.Status || body.CallStatus || 'completed';
+    const status = body.Status || body.CallStatus || 'unknown';
     const duration = parseInt(body.DialCallDuration || body.Duration || '0', 10);
 
-    let eventType: NormalizedWebhookEvent['eventType'] = 'call.completed';
+    let eventType: NormalizedWebhookEvent['eventType'] = 'call.failed';
     if (status === 'ringing') eventType = 'call.initiated';
     else if (status === 'in-progress') eventType = 'call.answered';
     else if (status === 'failed' || status === 'busy' || status === 'no-answer') eventType = 'call.failed';

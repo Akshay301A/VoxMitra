@@ -14,6 +14,7 @@ import {
   BillingConfig,
   WalletOverviewData,
   WalletNotification,
+  OnboardingData,
 } from '../types.ts';
 
 const TOKEN_KEY = 'voxmitra_auth_token';
@@ -122,6 +123,19 @@ export const api = {
     return request<Agent>(`/api/agents/${id}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
+    });
+  },
+
+  async deployInboundAgent(id: string, phoneNumber: string): Promise<{ agent: Agent }> {
+    return request<{ agent: Agent }>(`/api/agents/${id}/inbound-deployment`, {
+      method: 'PUT',
+      body: JSON.stringify({ phoneNumber }),
+    });
+  },
+
+  async deactivateInboundAgent(id: string): Promise<{ agent: Agent }> {
+    return request<{ agent: Agent }>(`/api/agents/${id}/inbound-deployment`, {
+      method: 'DELETE',
     });
   },
 
@@ -435,12 +449,12 @@ export const api = {
   },
 
   // Onboarding
-  async getOnboarding(): Promise<any> {
-    return request<any>('/api/onboarding');
+  async getOnboarding(): Promise<OnboardingData> {
+    return request<OnboardingData>('/api/onboarding');
   },
 
-  async saveOnboarding(data: any): Promise<any> {
-    return request<any>('/api/onboarding', {
+  async saveOnboarding(data: Partial<OnboardingData>): Promise<OnboardingData> {
+    return request<OnboardingData>('/api/onboarding', {
       method: 'PUT',
       body: JSON.stringify(data),
     });

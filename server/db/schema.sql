@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS agents (
     name VARCHAR(255) NOT NULL,
     agent_type VARCHAR(50) NOT NULL CHECK (agent_type IN ('instant_lead', 'bulk_caller', 'inbound_receptionist')),
     description TEXT,
-    status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('active', 'paused', 'draft')),
+    status VARCHAR(50) DEFAULT 'draft' CHECK (status IN ('active', 'paused', 'draft')),
+    inbound_phone_number VARCHAR(50) NOT NULL DEFAULT '',
     total_calls INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -49,6 +50,8 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE INDEX IF NOT EXISTS idx_agents_business ON agents(business_id);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+CREATE UNIQUE INDEX IF NOT EXISTS agents_inbound_phone_number_uq
+    ON agents(inbound_phone_number) WHERE inbound_phone_number <> '';
 
 -- 4. Agent Configurations Table
 CREATE TABLE IF NOT EXISTS agent_configurations (
@@ -69,10 +72,13 @@ CREATE TABLE IF NOT EXISTS agent_configurations (
     callback_instructions TEXT,
     contact_fields_to_collect JSONB DEFAULT '[]'::jsonb,
     business_faqs JSONB DEFAULT '[]'::jsonb,
+    agent_plan JSONB,
     webhook_url VARCHAR(500),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE agent_configurations ADD COLUMN IF NOT EXISTS agent_plan JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_agent_configs_agent ON agent_configurations(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_configs_business ON agent_configurations(business_id);
@@ -101,6 +107,8 @@ CREATE INDEX IF NOT EXISTS idx_call_records_business ON call_records(business_id
 CREATE INDEX IF NOT EXISTS idx_call_records_agent ON call_records(agent_id);
 CREATE INDEX IF NOT EXISTS idx_call_records_created ON call_records(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_call_records_status ON call_records(status);
+CREATE UNIQUE INDEX IF NOT EXISTS call_records_telephony_call_sid_uq
+    ON call_records(telephony_call_sid) WHERE telephony_call_sid <> '';
 
 -- 6. Callbacks Table
 CREATE TABLE IF NOT EXISTS callbacks (
@@ -349,4 +357,3 @@ CREATE POLICY tenant_isolation_billing_config ON billing_config
 
 CREATE POLICY tenant_isolation_wallet_notifications ON wallet_notifications
     FOR ALL USING (business_id = auth_user_business_id());
-

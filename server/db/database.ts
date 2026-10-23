@@ -2,6 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
+import type { AgentPlan } from '../../src/agents/agentPlan.types.ts';
+import type { DatabaseContract } from './database.contract.ts';
+import { readDatabaseConfiguration } from './backend.ts';
+import { PostgresRepository } from './postgres-repository.ts';
+import { isBillableRealCall } from './call-records.ts';
 
 export interface Business {
   id: string;
@@ -36,6 +41,7 @@ export interface Agent {
   agent_type: AgentType;
   description: string;
   status: AgentStatus;
+  inbound_phone_number?: string;
   total_calls: number;
   created_at: string;
   updated_at: string;
@@ -67,6 +73,7 @@ export interface AgentConfig {
   voice_settings: {
     stability: number;
     similarity_boost: number;
+    speaking_rate?: number;
   };
   max_duration_seconds: number;
   transfer_enabled: boolean;
@@ -75,6 +82,7 @@ export interface AgentConfig {
   callback_instructions: string;
   contact_fields_to_collect: ContactField[];
   business_faqs: FAQItem[];
+  agent_plan?: AgentPlan;
   webhook_url: string;
   created_at: string;
   updated_at: string;
@@ -188,11 +196,20 @@ export interface KnowledgeSource {
 export interface OnboardingData {
   businessName: string;
   businessCategory: string;
-  primaryUseCase: 'inbound_receptionist' | 'instant_lead' | 'bulk_caller';
-  preferredLanguage: string;
-  preferredVoice: string;
+  website?: string;
+  location?: string;
+  timezone?: string;
+  goals?: string[];
+  startingPoint?: 'agent' | 'dashboard';
+  pendingAgentStart?: boolean;
+  status?: 'not_started' | 'in_progress' | 'completed' | 'skipped';
   step: number;
+  tourStep?: number;
   completed: boolean;
+  tourCompleted?: boolean;
+  primaryUseCase?: 'inbound_receptionist' | 'instant_lead' | 'bulk_caller';
+  preferredLanguage?: string;
+  preferredVoice?: string;
 }
 
 export interface Wallet {
@@ -328,10 +345,13 @@ interface DatabaseSchema {
   wallet_notifications?: WalletNotification[];
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const DATA_FILE = path.join(DATA_DIR, 'voxmitra.json');
+const DATA_FILE = path.resolve(
+  process.env.VOXMITRA_DATA_FILE || path.join(process.cwd(), 'data', 'voxmitra.json')
+);
+const DATA_DIR = path.dirname(DATA_FILE);
+export const DEVELOPMENT_DEMO_USER_ID = 'u0198000-0000-4000-8000-000000000001';
 
-class DatabaseStore {
+class DatabaseStore implements DatabaseContract {
   private data: DatabaseSchema;
 
   constructor() {
@@ -347,16 +367,50 @@ class DatabaseStore {
       if (fs.existsSync(DATA_FILE)) {
         const raw = fs.readFileSync(DATA_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
+        parsed.agents = (parsed.agents || []).map((agent: Agent) => ({
+          ...agent,
+          inbound_phone_number: agent.inbound_phone_number || '',
+        }));
         this.ensureWalletSchema(parsed);
+        if (process.env.NODE_ENV === 'production') {
+          parsed.users = parsed.users.filter((user: User) => user.id !== DEVELOPMENT_DEMO_USER_ID);
+        }
         return parsed;
       }
     } catch (err) {
       console.warn('Failed reading existing db file, initializing fresh store:', err);
     }
 
-    const initial = this.generateSeedData();
+    const initial = this.generateInitialData();
     this.persistSync(initial);
     return initial;
+  }
+
+  private generateInitialData(): DatabaseSchema {
+    if (process.env.NODE_ENV === 'development' && process.env.VOXMITRA_DEMO_MODE === 'true') {
+      return this.generateSeedData();
+    }
+    return {
+      businesses: [],
+      users: [],
+      agents: [],
+      agent_configurations: [],
+      call_records: [],
+      callbacks: [],
+      integrations: [],
+      usage_records: [],
+      campaigns: [],
+      leads: [],
+      knowledge_sources: [],
+      onboarding: {},
+      wallets: [],
+      wallet_transactions: [],
+      wallet_reservations: [],
+      wallet_autotopup_settings: [],
+      payment_orders: [],
+      billing_configs: [],
+      wallet_notifications: [],
+    };
   }
 
   private persistSync(dataToSave: DatabaseSchema) {
@@ -759,7 +813,8 @@ class DatabaseStore {
 
   // User & Auth operations
   getUserByEmail(email: string): User | undefined {
-    return this.data.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    const normalizedEmail = email.trim().toLowerCase();
+    return this.data.users.find((u) => u.email.trim().toLowerCase() === normalizedEmail);
   }
 
   getUserById(id: string): User | undefined {
@@ -767,7 +822,9 @@ class DatabaseStore {
   }
 
   createUser(payload: { email: string; password: string; fullName: string; businessName: string }): { user: User; business: Business } {
-    const existing = this.getUserByEmail(payload.email);
+    const email = payload.email.trim().toLowerCase();
+    const businessName = payload.businessName.trim() || 'My Business';
+    const existing = this.getUserByEmail(email);
     if (existing) {
       throw new Error('An account with this email address already exists.');
     }
@@ -779,9 +836,9 @@ class DatabaseStore {
 
     const business: Business = {
       id: businessId,
-      name: payload.businessName || 'My Business',
-      slug: (payload.businessName || 'my-business').toLowerCase().replace(/[^a-z0-9]/g, '-'),
-      contact_email: payload.email,
+      name: businessName,
+      slug: `${businessName.toLowerCase().replace(/[^a-z0-9]/g, '-') || 'my-business'}-${businessId.slice(0, 8)}`,
+      contact_email: email,
       phone_number: '',
       plan_tier: 'starter',
       timezone: 'UTC',
@@ -792,7 +849,7 @@ class DatabaseStore {
     const user: User = {
       id: userId,
       business_id: businessId,
-      email: payload.email,
+      email,
       password_hash,
       full_name: payload.fullName,
       role: 'owner',
@@ -802,6 +859,20 @@ class DatabaseStore {
 
     this.data.businesses.push(business);
     this.data.users.push(user);
+    if (!this.data.onboarding) this.data.onboarding = {};
+    this.data.onboarding[userId] = {
+      businessName: business.name,
+      businessCategory: '',
+      timezone: business.timezone,
+      goals: [],
+      startingPoint: 'agent',
+      pendingAgentStart: false,
+      status: 'not_started',
+      step: 0,
+      tourStep: 0,
+      completed: false,
+      tourCompleted: false,
+    };
     this.save();
 
     return { user, business };
@@ -818,7 +889,11 @@ class DatabaseStore {
 
     this.data.businesses[index] = {
       ...this.data.businesses[index],
-      ...updates,
+      ...(updates.name !== undefined ? { name: updates.name } : {}),
+      ...(updates.slug !== undefined ? { slug: updates.slug } : {}),
+      ...(updates.contact_email !== undefined ? { contact_email: updates.contact_email } : {}),
+      ...(updates.phone_number !== undefined ? { phone_number: updates.phone_number } : {}),
+      ...(updates.timezone !== undefined ? { timezone: updates.timezone } : {}),
       updated_at: new Date().toISOString(),
     };
     this.save();
@@ -832,6 +907,54 @@ class DatabaseStore {
 
   getAgentById(agentId: string, businessId: string): Agent | undefined {
     return this.data.agents.find((a) => a.id === agentId && a.business_id === businessId);
+  }
+
+  assignInboundPhone(businessId: string, agentId: string, phoneNumber: string): Agent {
+    const agent = this.data.agents.find(
+      (item) => item.id === agentId && item.business_id === businessId
+    );
+    if (!agent) throw new Error('Agent not found');
+    if (agent.agent_type !== 'inbound_receptionist') {
+      throw new Error('Only inbound receptionist agents can be activated for an inbound number.');
+    }
+    const assignedAgent = this.data.agents.find(
+      (item) => item.inbound_phone_number === phoneNumber && item.id !== agentId
+    );
+    if (assignedAgent) throw new Error('This phone number is already assigned to another agent.');
+
+    agent.inbound_phone_number = phoneNumber;
+    agent.status = 'active';
+    agent.updated_at = new Date().toISOString();
+    this.save();
+    return agent;
+  }
+
+  getActiveInboundAgentByPhoneNumber(
+    phoneNumber: string
+  ): { agent: Agent; config: AgentConfig } | undefined {
+    const agent = this.data.agents.find(
+      (item) =>
+        item.agent_type === 'inbound_receptionist' &&
+        item.status === 'active' &&
+        item.inbound_phone_number === phoneNumber
+    );
+    if (!agent) return undefined;
+    const config = this.data.agent_configurations.find(
+      (item) => item.agent_id === agent.id && item.business_id === agent.business_id
+    );
+    return config ? { agent, config } : undefined;
+  }
+
+  clearInboundPhone(businessId: string, agentId: string): Agent {
+    const agent = this.data.agents.find(
+      (item) => item.id === agentId && item.business_id === businessId
+    );
+    if (!agent) throw new Error('Agent not found');
+    agent.inbound_phone_number = '';
+    agent.status = 'paused';
+    agent.updated_at = new Date().toISOString();
+    this.save();
+    return agent;
   }
 
   createAgentWithConfig(
@@ -854,7 +977,8 @@ class DatabaseStore {
       name: agentData.name,
       agent_type: agentData.agent_type,
       description: agentData.description,
-      status: agentData.status || 'active',
+      status: agentData.status || 'draft',
+      inbound_phone_number: '',
       total_calls: 0,
       created_at: now,
       updated_at: now,
@@ -878,6 +1002,7 @@ class DatabaseStore {
       callback_instructions: configData.callback_instructions || '',
       contact_fields_to_collect: configData.contact_fields_to_collect || [],
       business_faqs: configData.business_faqs || [],
+      agent_plan: configData.agent_plan,
       webhook_url: configData.webhook_url || '',
       created_at: now,
       updated_at: now,
@@ -897,6 +1022,8 @@ class DatabaseStore {
     this.data.agents[idx] = {
       ...this.data.agents[idx],
       ...updates,
+      id: this.data.agents[idx].id,
+      business_id: this.data.agents[idx].business_id,
       updated_at: new Date().toISOString(),
     };
     this.save();
@@ -936,6 +1063,7 @@ class DatabaseStore {
         callback_instructions: updates.callback_instructions || '',
         contact_fields_to_collect: updates.contact_fields_to_collect || [],
         business_faqs: updates.business_faqs || [],
+        agent_plan: updates.agent_plan,
         webhook_url: updates.webhook_url || '',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -948,6 +1076,9 @@ class DatabaseStore {
     this.data.agent_configurations[idx] = {
       ...this.data.agent_configurations[idx],
       ...updates,
+      id: this.data.agent_configurations[idx].id,
+      agent_id: this.data.agent_configurations[idx].agent_id,
+      business_id: this.data.agent_configurations[idx].business_id,
       updated_at: new Date().toISOString(),
     };
     this.save();
@@ -993,7 +1124,36 @@ class DatabaseStore {
     return this.data.call_records.find((r) => r.id === callId && r.business_id === businessId);
   }
 
+  getCallRecordByTelephonySid(callSid: string): CallRecord | undefined {
+    return this.data.call_records.find((record) => record.telephony_call_sid === callSid);
+  }
+
+  updateCallRecordByTelephonySid(
+    callSid: string,
+    updates: Partial<Pick<CallRecord, 'duration_seconds' | 'status' | 'transcript' | 'summary' | 'recording_url'>>
+  ): CallRecord | undefined {
+    const record = this.getCallRecordByTelephonySid(callSid);
+    if (!record) return undefined;
+    const terminalStatuses = ['completed', 'failed', 'busy', 'no_answer', 'transferred'];
+    const nextUpdates = { ...updates };
+    if (terminalStatuses.includes(record.status)) delete nextUpdates.status;
+    Object.assign(record, nextUpdates);
+    this.save();
+    return record;
+  }
+
   createCallRecord(callData: Omit<CallRecord, 'id' | 'created_at'>): CallRecord {
+    return this.createCallRecordIfNew(callData).call;
+  }
+
+  createCallRecordIfNew(
+    callData: Omit<CallRecord, 'id' | 'created_at'>
+  ): { call: CallRecord; created: boolean } {
+    const existing = callData.telephony_call_sid
+      ? this.getCallRecordByTelephonySid(callData.telephony_call_sid)
+      : undefined;
+    if (existing) return { call: existing, created: false };
+
     const id = uuidv4();
     const record: CallRecord = {
       ...callData,
@@ -1004,13 +1164,15 @@ class DatabaseStore {
     this.data.call_records.unshift(record);
 
     // Update agent total calls count
-    const agentIdx = this.data.agents.findIndex((a) => a.id === callData.agent_id);
+    const agentIdx = this.data.agents.findIndex(
+      (a) => a.id === callData.agent_id && a.business_id === callData.business_id
+    );
     if (agentIdx !== -1) {
       this.data.agents[agentIdx].total_calls = (this.data.agents[agentIdx].total_calls || 0) + 1;
     }
 
     this.save();
-    return record;
+    return { call: record, created: true };
   }
 
   // Callbacks
@@ -1042,6 +1204,9 @@ class DatabaseStore {
     this.data.callbacks[idx] = {
       ...this.data.callbacks[idx],
       ...updates,
+      id: this.data.callbacks[idx].id,
+      business_id: this.data.callbacks[idx].business_id,
+      created_at: this.data.callbacks[idx].created_at,
       updated_at: new Date().toISOString(),
     };
     this.save();
@@ -1076,6 +1241,10 @@ class DatabaseStore {
     this.data.integrations[idx] = {
       ...this.data.integrations[idx],
       ...updates,
+      id: this.data.integrations[idx].id,
+      business_id: this.data.integrations[idx].business_id,
+      provider: this.data.integrations[idx].provider,
+      created_at: this.data.integrations[idx].created_at,
       updated_at: now,
     };
     this.save();
@@ -1085,27 +1254,32 @@ class DatabaseStore {
   // Dashboard Stats
   getDashboardStats(businessId: string) {
     const calls = this.data.call_records.filter((r) => r.business_id === businessId);
+    const billableCalls = calls.filter(isBillableRealCall);
     const agents = this.data.agents.filter((a) => a.business_id === businessId);
     const callbacks = this.data.callbacks.filter((c) => c.business_id === businessId && c.status === 'pending');
 
-    const totalCalls = calls.length;
-    const answeredCalls = calls.filter((r) => r.status === 'completed' || r.status === 'transferred').length;
-    const failedCalls = calls.filter((r) => r.status === 'failed' || r.status === 'no_answer' || r.status === 'busy').length;
-    const totalDurationSeconds = calls.reduce((acc, curr) => acc + (curr.duration_seconds || 0), 0);
+    const totalCalls = billableCalls.length;
+    const answeredCalls = billableCalls.filter((r) => r.status === 'completed' || r.status === 'transferred').length;
+    const failedCalls = billableCalls.filter((r) => r.status === 'failed' || r.status === 'no_answer' || r.status === 'busy').length;
+    const totalDurationSeconds = billableCalls.reduce((acc, curr) => acc + (curr.duration_seconds || 0), 0);
     const totalMinutes = Math.round((totalDurationSeconds / 60) * 10) / 10;
 
-    const realCallsCount = calls.filter((c) => !c.is_demo).length;
-    const demoCallsCount = calls.filter((c) => c.is_demo).length;
-    const qualifiedLeadsCount = (this.data.leads || []).filter((l) => l.business_id === businessId && l.qualification_status === 'qualified').length || 48;
-    const followUpsDueCount = callbacks.length + ((this.data.leads || []).filter((l) => l.business_id === businessId && l.qualification_status === 'follow_up_due').length || 15);
+    const realCallsCount = billableCalls.length;
+    const demoCallsCount = calls.filter((call) =>
+      call.is_demo ||
+      /^test[-_]/i.test(call.telephony_call_sid) ||
+      /\(interactive test\)/i.test(call.caller_number)
+    ).length;
+    const qualifiedLeadsCount = (this.data.leads || []).filter((l) => l.business_id === businessId && l.qualification_status === 'qualified').length;
+    const followUpsDueCount = callbacks.length + (this.data.leads || []).filter((l) => l.business_id === businessId && l.qualification_status === 'follow_up_due').length;
 
     return {
-      totalCalls: totalCalls > 0 ? totalCalls : 248,
-      answeredCalls: answeredCalls > 0 ? answeredCalls : 212,
+      totalCalls,
+      answeredCalls,
       failedCalls,
-      answerRatePercent: totalCalls > 0 ? Math.round((answeredCalls / totalCalls) * 100) : 85,
+      answerRatePercent: totalCalls > 0 ? Math.round((answeredCalls / totalCalls) * 100) : 0,
       totalDurationSeconds,
-      totalMinutes: totalMinutes > 0 ? totalMinutes : 324.5,
+      totalMinutes,
       activeAgentsCount: agents.filter((a) => a.status === 'active').length,
       totalAgentsCount: agents.length,
       pendingCallbacksCount: callbacks.length,
@@ -1118,11 +1292,7 @@ class DatabaseStore {
 
   // Campaigns
   getCampaigns(businessId: string): Campaign[] {
-    if (!this.data.campaigns) {
-      this.data.campaigns = this.generateSeedCampaigns(businessId);
-      this.save();
-    }
-    return this.data.campaigns.filter((c) => c.business_id === businessId);
+    return (this.data.campaigns || []).filter((c) => c.business_id === businessId);
   }
 
   createCampaign(payload: Omit<Campaign, 'id' | 'created_at'>): Campaign {
@@ -1141,18 +1311,20 @@ class DatabaseStore {
     if (!this.data.campaigns) this.data.campaigns = [];
     const idx = this.data.campaigns.findIndex((c) => c.id === id && c.business_id === businessId);
     if (idx === -1) throw new Error('Campaign not found');
-    this.data.campaigns[idx] = { ...this.data.campaigns[idx], ...updates };
+    this.data.campaigns[idx] = {
+      ...this.data.campaigns[idx],
+      ...updates,
+      id: this.data.campaigns[idx].id,
+      business_id: this.data.campaigns[idx].business_id,
+      created_at: this.data.campaigns[idx].created_at,
+    };
     this.save();
     return this.data.campaigns[idx];
   }
 
   // Leads & Follow-ups
   getLeads(businessId: string, status?: string): Lead[] {
-    if (!this.data.leads) {
-      this.data.leads = this.generateSeedLeads(businessId);
-      this.save();
-    }
-    let list = this.data.leads.filter((l) => l.business_id === businessId);
+    let list = (this.data.leads || []).filter((l) => l.business_id === businessId);
     if (status && status !== 'all') {
       list = list.filter((l) => l.qualification_status === status);
     }
@@ -1163,18 +1335,19 @@ class DatabaseStore {
     if (!this.data.leads) this.data.leads = [];
     const idx = this.data.leads.findIndex((l) => l.id === id && l.business_id === businessId);
     if (idx === -1) throw new Error('Lead not found');
-    this.data.leads[idx] = { ...this.data.leads[idx], ...updates };
+    this.data.leads[idx] = {
+      ...this.data.leads[idx],
+      ...updates,
+      id: this.data.leads[idx].id,
+      business_id: this.data.leads[idx].business_id,
+    };
     this.save();
     return this.data.leads[idx];
   }
 
   // Knowledge Sources
   getKnowledgeSources(businessId: string): KnowledgeSource[] {
-    if (!this.data.knowledge_sources) {
-      this.data.knowledge_sources = this.generateSeedKnowledge(businessId);
-      this.save();
-    }
-    return this.data.knowledge_sources.filter((k) => k.business_id === businessId);
+    return (this.data.knowledge_sources || []).filter((k) => k.business_id === businessId);
   }
 
   addKnowledgeSource(payload: Omit<KnowledgeSource, 'id' | 'updated_at'>): KnowledgeSource {
@@ -1190,29 +1363,46 @@ class DatabaseStore {
   }
 
   // Onboarding
-  getOnboarding(businessId: string): OnboardingData {
+  getOnboarding(userId: string, businessId?: string): OnboardingData {
     if (!this.data.onboarding) this.data.onboarding = {};
-    if (!this.data.onboarding[businessId]) {
-      this.data.onboarding[businessId] = {
-        businessName: 'Acme Healthcare',
-        businessCategory: 'Healthcare & Clinics',
-        primaryUseCase: 'inbound_receptionist',
-        preferredLanguage: 'English (Indian Accent)',
-        preferredVoice: 'Priya (Indian Female)',
-        step: 1,
-        completed: true,
+    const saved = this.data.onboarding[userId] || (businessId ? this.data.onboarding[businessId] : undefined);
+    if (saved) {
+      const legacyRecord = !saved.status;
+      return {
+        ...saved,
+        status: saved.status || (saved.completed ? 'completed' : 'not_started'),
+        tourCompleted: saved.tourCompleted ?? legacyRecord,
       };
-      this.save();
     }
-    return this.data.onboarding[businessId];
+
+    const resolvedBusinessId = businessId || this.getUserById(userId)?.business_id;
+    const business = resolvedBusinessId ? this.getBusiness(resolvedBusinessId) : undefined;
+    return {
+      businessName: business?.name || '',
+      businessCategory: '',
+      timezone: business?.timezone || 'UTC',
+      goals: [],
+      startingPoint: 'dashboard',
+      pendingAgentStart: false,
+      status: 'completed',
+      step: 5,
+      tourStep: 0,
+      completed: true,
+      tourCompleted: true,
+    };
   }
 
-  saveOnboarding(businessId: string, data: Partial<OnboardingData>): OnboardingData {
+  saveOnboarding(userId: string, data: Partial<OnboardingData>, businessId?: string): OnboardingData {
     if (!this.data.onboarding) this.data.onboarding = {};
-    const existing = this.getOnboarding(businessId);
-    this.data.onboarding[businessId] = { ...existing, ...data };
+    const existing = this.getOnboarding(userId, businessId);
+    const updated = { ...existing, ...data };
+    if (data.status && !['not_started', 'in_progress', 'completed', 'skipped'].includes(data.status)) {
+      throw new Error('Invalid onboarding status');
+    }
+    updated.completed = updated.status === 'completed' || updated.status === 'skipped';
+    this.data.onboarding[userId] = updated;
     this.save();
-    return this.data.onboarding[businessId];
+    return this.data.onboarding[userId];
   }
 
   private generateSeedCampaigns(businessId: string): Campaign[] {
@@ -2047,7 +2237,7 @@ class DatabaseStore {
   getDailyUsageMetrics(businessId: string, days = 14): { date: string; credits: number; minutes: number; callCount: number }[] {
     this.ensureWalletSchema(this.data);
     const result: { date: string; credits: number; minutes: number; callCount: number }[] = [];
-    const calls = this.data.call_records.filter((c) => c.business_id === businessId);
+    const calls = this.data.call_records.filter((c) => c.business_id === businessId && isBillableRealCall(c));
 
     const now = new Date();
     for (let i = days - 1; i >= 0; i--) {
@@ -2057,8 +2247,19 @@ class DatabaseStore {
 
       const durationSec = dayCalls.reduce((acc, c) => acc + (c.duration_seconds || 0), 0);
       const minutes = Math.round((durationSec / 60) * 10) / 10;
-      // credits spent approximately minutes * 5.5
-      const credits = Math.round(minutes * 5.5 * 100) / 100;
+      const callIds = new Set(dayCalls.map((call) => call.id));
+      const creditsMinor = (this.data.wallet_transactions || [])
+        .filter((transaction) =>
+          transaction.business_id === businessId &&
+          transaction.transaction_type === 'call_usage' &&
+          transaction.direction === 'debit' &&
+          transaction.status === 'completed' &&
+          transaction.call_id !== undefined &&
+          callIds.has(transaction.call_id) &&
+          transaction.created_at.slice(0, 10) === dateStr
+        )
+        .reduce((sum, transaction) => sum + transaction.amount_minor, 0);
+      const credits = creditsMinor / 100;
 
       result.push({
         date: d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
@@ -2072,5 +2273,7 @@ class DatabaseStore {
   }
 }
 
-export const db = new DatabaseStore();
-
+const databaseConfiguration = readDatabaseConfiguration();
+export const db: DatabaseContract = databaseConfiguration.backend === 'postgres'
+  ? new PostgresRepository()
+  : new DatabaseStore();

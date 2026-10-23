@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext.tsx';
 import { AppLayout } from './components/layout/AppLayout.tsx';
 import { LandingPage } from './pages/LandingPage.tsx';
@@ -14,16 +14,100 @@ import { IntegrationsPage } from './pages/IntegrationsPage.tsx';
 import { BillingPage } from './pages/BillingPage.tsx';
 import { WalletPage } from './pages/WalletPage.tsx';
 import { AccountSettingsPage } from './pages/AccountSettingsPage.tsx';
+import { OnboardingWizard } from './components/onboarding/OnboardingWizard.tsx';
+import type { OnboardingData } from './types.ts';
+import { api } from './api/client.ts';
 
 function MainRouter() {
-  const { user, loading } = useAuth();
+  const { user, loading, refreshMe } = useAuth();
   const [currentPage, setCurrentPage] = useState<string>('landing');
   const [pageParams, setPageParams] = useState<any>({});
+  const [onboarding, setOnboarding] = useState<OnboardingData | null>(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingLoading, setOnboardingLoading] = useState(false);
+  const [onboardingError, setOnboardingError] = useState('');
+  const [tourOpen, setTourOpen] = useState(false);
 
-  const handleNavigate = (page: string, params?: any) => {
+  const handleNavigate = useCallback((page: string, params?: any) => {
     setCurrentPage(page);
     setPageParams(params || {});
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setOnboarding(null);
+      setOnboardingOpen(false);
+      setTourOpen(false);
+      setOnboardingError('');
+      return;
+    }
+    let active = true;
+    setOnboardingLoading(true);
+    setOnboardingError('');
+    void api.getOnboarding()
+      .then((data) => {
+        if (!active) return;
+        setOnboarding(data);
+        if (data.status === 'not_started' || data.status === 'in_progress') {
+          setCurrentPage('dashboard');
+          setOnboardingOpen(true);
+        } else if (data.status === 'completed' && !data.tourCompleted) {
+          setCurrentPage('dashboard');
+          setTourOpen(true);
+        }
+      })
+      .catch((error) => {
+        console.error('Could not load workspace onboarding state:', error);
+        if (active) setOnboardingError(error instanceof Error ? error.message : 'Onboarding status is unavailable.');
+      })
+      .finally(() => {
+        if (active) setOnboardingLoading(false);
+      });
+    return () => { active = false; };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!loading && user && currentPage === 'landing') setCurrentPage('dashboard');
+  }, [currentPage, loading, user]);
+
+  const saveOnboarding = useCallback(async (patch: Partial<OnboardingData>) => {
+    const updated = await api.saveOnboarding(patch);
+    setOnboarding(updated);
+  }, []);
+
+  const finishOnboarding = async (data: OnboardingData) => {
+    if (data.businessName !== onboarding?.businessName || data.timezone !== onboarding?.timezone) {
+      await api.updateBusiness({ name: data.businessName, timezone: data.timezone });
+      await refreshMe();
+    }
+    setOnboarding(data);
+    setOnboardingOpen(false);
+    setCurrentPage('dashboard');
+    if (!data.tourCompleted) setTourOpen(true);
+  };
+
+  const skipOnboarding = async () => {
+    const updated = await api.saveOnboarding({
+      status: 'skipped',
+      completed: true,
+      step: onboarding?.step || 0,
+      tourCompleted: true,
+      pendingAgentStart: false,
+    });
+    setOnboarding(updated);
+    setOnboardingOpen(false);
+    setCurrentPage('dashboard');
+  };
+
+  const finishTour = () => {
+    const shouldStartAgent = onboarding?.pendingAgentStart;
+    const updated = onboarding ? { ...onboarding, tourCompleted: true, pendingAgentStart: false, tourStep: 8 } : null;
+    if (updated) setOnboarding(updated);
+    setTourOpen(false);
+    if (shouldStartAgent && updated) {
+      handleNavigate('create-agent', { onboardingPrefill: updated });
+    } else handleNavigate('dashboard');
   };
 
   if (loading) {
@@ -74,10 +158,15 @@ function MainRouter() {
   };
 
   return (
+    <>
     <AppLayout
       currentPage={currentPage}
       onNavigate={handleNavigate}
       breadcrumbs={breadcrumbMap[currentPage] || ['Console']}
+      tourOpen={tourOpen}
+      tourStartStep={onboarding?.tourCompleted ? 0 : onboarding?.tourStep || 0}
+      onTourOpen={() => setTourOpen(true)}
+      onTourFinish={finishTour}
     >
       {currentPage === 'dashboard' && (
         <DashboardPage onNavigate={handleNavigate} />
@@ -91,6 +180,8 @@ function MainRouter() {
         <CreateAgentWizard
           onSuccess={(newAgentId) => handleNavigate('agent-editor', { agentId: newAgentId })}
           onCancel={() => handleNavigate('agents')}
+          onTest={(agentId) => handleNavigate('testing', { agentId })}
+          initialBusiness={pageParams.onboardingPrefill}
         />
       )}
 
@@ -127,7 +218,22 @@ function MainRouter() {
       {currentPage === 'billing' && <BillingPage onNavigate={handleNavigate} />}
 
       {currentPage === 'settings' && <AccountSettingsPage />}
+      {onboardingError && (
+        <div role="alert" className="fixed bottom-4 right-4 z-40 max-w-sm rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg">
+          <p className="font-semibold">Setup status could not be loaded</p>
+          <p className="mt-1 text-xs">{onboardingError}. You can still use the dashboard; refresh and sign in again to retry.</p>
+        </div>
+      )}
     </AppLayout>
+    {onboardingOpen && onboarding && !onboardingLoading && (
+      <OnboardingWizard
+        initialData={onboarding}
+        onSave={saveOnboarding}
+        onComplete={finishOnboarding}
+        onSkip={skipOnboarding}
+      />
+    )}
+    </>
   );
 }
 

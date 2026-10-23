@@ -173,12 +173,13 @@ export const AgentListPage: React.FC<AgentListPageProps> = ({ onNavigate }) => {
                   </span>
                   <button
                     onClick={() => handleToggleStatus(agent)}
-                    title="Click to toggle status"
+                    disabled={agent.status === 'draft'}
+                    title={agent.status === 'draft' ? 'Draft agents cannot be activated until live deployment is supported' : 'Click to toggle status'}
                     className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold cursor-pointer transition-colors ${
                       agent.status === 'active'
                         ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                         : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
-                    }`}
+                    } disabled:cursor-not-allowed disabled:opacity-70`}
                   >
                     {agent.status === 'active' ? (
                       <CheckCircle2 className="w-3 h-3" />

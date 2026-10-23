@@ -83,8 +83,8 @@ const STANDARD_VOICES: ElevenLabsVoice[] = [
   },
 ];
 
-export async function getVoiceCatalog(customApiKey?: string): Promise<VoiceCatalogResponse> {
-  const apiKey = customApiKey || process.env.ELEVENLABS_API_KEY;
+export async function getVoiceCatalog(): Promise<VoiceCatalogResponse> {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
 
   if (!apiKey) {
     return {
@@ -92,7 +92,7 @@ export async function getVoiceCatalog(customApiKey?: string): Promise<VoiceCatal
       provider: 'elevenlabs',
       voices: STANDARD_VOICES,
       supported_languages: SUPPORTED_LANGUAGES,
-      message: 'ELEVENLABS_API_KEY is not configured in server environment. Showing official standard voice presets. Add your key in Integrations to enable real-time speech synthesis and cloned voices.',
+      message: 'ELEVENLABS_API_KEY is not configured in the server environment. Showing standard voice presets.',
     };
   }
 
@@ -106,8 +106,6 @@ export async function getVoiceCatalog(customApiKey?: string): Promise<VoiceCatal
     });
 
     if (!response.ok) {
-      const errBody = await response.text();
-      console.error('ElevenLabs API error response:', response.status, errBody);
       return {
         configured: false,
         provider: 'elevenlabs',
@@ -133,29 +131,29 @@ export async function getVoiceCatalog(customApiKey?: string): Promise<VoiceCatal
       voices: fetchedVoices.length > 0 ? fetchedVoices : STANDARD_VOICES,
       supported_languages: SUPPORTED_LANGUAGES,
     };
-  } catch (err: any) {
-    console.error('Failed to connect to ElevenLabs API:', err);
+  } catch {
+    console.error('Failed to connect to ElevenLabs API.');
     return {
       configured: false,
       provider: 'elevenlabs',
       voices: STANDARD_VOICES,
       supported_languages: SUPPORTED_LANGUAGES,
-      message: `Error contacting ElevenLabs: ${err.message}`,
+      message: 'Error contacting ElevenLabs.',
     };
   }
 }
 
-export async function testSpeechSynthesis(voiceId: string, text: string, customApiKey?: string): Promise<{ success: boolean; audioBase64?: string; error?: string }> {
-  const apiKey = customApiKey || process.env.ELEVENLABS_API_KEY;
+export async function testSpeechSynthesis(voiceId: string, text: string): Promise<{ success: boolean; audioBase64?: string; error?: string }> {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
     return {
       success: false,
-      error: 'ELEVENLABS_API_KEY is required for live audio synthesis. Configure your key in Integrations.',
+      error: 'ELEVENLABS_API_KEY is required for live audio synthesis. Configure it in the server environment.',
     };
   }
 
   try {
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
       method: 'POST',
       headers: {
         'xi-api-key': apiKey,
@@ -173,15 +171,14 @@ export async function testSpeechSynthesis(voiceId: string, text: string, customA
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return { success: false, error: `Synthesis error ${response.status}: ${errText}` };
+      return { success: false, error: `Synthesis error ${response.status}.` };
     }
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const base64 = buffer.toString('base64');
     return { success: true, audioBase64: `data:audio/mpeg;base64,${base64}` };
-  } catch (err: any) {
-    return { success: false, error: err.message };
+  } catch {
+    return { success: false, error: 'ElevenLabs synthesis request failed.' };
   }
 }

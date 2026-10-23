@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { Agent, AgentConfig, db, CallRecord } from '../db/database.ts';
 import { testSpeechSynthesis } from './elevenlabs.ts';
+import type { AgentPlan } from '../../src/agents/agentPlan.types.ts';
 
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI() : null;
 
@@ -22,24 +23,71 @@ export interface ConversationTurnResponse {
   sentiment: 'positive' | 'neutral' | 'negative';
 }
 
-export async function processConversationTurn(request: ConversationTurnRequest): Promise<ConversationTurnResponse> {
-  const agent = db.getAgentById(request.agentId, request.businessId);
-  const config = db.getAgentConfig(request.agentId, request.businessId);
+function buildAgentPlanContext(plan: AgentPlan | undefined): string {
+  if (!plan) return '';
 
-  if (!agent || !config) {
-    return {
-      replyText: "I'm sorry, I am currently experiencing a connection error. Please hold while I connect you.",
-      isCompleted: false,
-      extractedFields: {},
-      sentiment: 'neutral',
-    };
-  }
+  const list = (items: string[]) => items.map((item) => `- ${item}`).join('\n');
+  const fields = plan.informationFields
+    .map(
+      (field) =>
+        `- ${field.description || field.name}${field.required ? ' [required when relevant]' : ' [optional]'}; ask when: ${field.askWhen}; guidance: ${field.validation}`
+    )
+    .join('\n');
+  const workflow = plan.workflow.map((step, index) => `${index + 1}. ${step.title}: ${step.detail}`).join('\n');
+  const faqs = plan.knowledge.faqs
+    .filter((faq) => faq.question.trim() && faq.answer.trim())
+    .map((faq) => `Q: ${faq.question}\nA: ${faq.answer}`)
+    .join('\n');
+  const callbackRules = plan.callback.enabled
+    ? [
+        plan.callback.askPermission ? 'Obtain permission before scheduling.' : '',
+        plan.callback.confirmDateTimeTimezone ? 'Confirm the callback date, time, and timezone.' : '',
+        plan.callback.storeStatus ? 'Record callback status and outcome.' : '',
+        plan.callback.checkAvailabilityBeforeTransfer ? 'At callback time, ask if the person is available before attempting a transfer.' : '',
+        plan.callback.offerRescheduling ? 'Offer rescheduling if the destination remains unavailable.' : '',
+        plan.callback.stopOnOptOut ? 'Stop immediately if the caller opts out.' : '',
+        plan.callback.stopAtRetryLimit ? `Stop after ${plan.callback.maxRetries} configured retries.` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : 'Do not schedule callbacks.';
 
-  // Build conversational context
-  const faqsText = config.business_faqs.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n');
-  const fieldsText = config.contact_fields_to_collect.map((f) => `- ${f.label} (${f.name})${f.required ? ' [REQUIRED]' : ''}`).join('\n');
+  return [
+    `BUSINESS CONTEXT:\n${plan.identity.businessContext}`,
+    `COMMUNICATION STYLE:\n${plan.identity.tone}`,
+    `WELCOME:\n${plan.identity.greeting}`,
+    `CLOSING:\n${plan.identity.closing}`,
+    `STRUCTURED OBJECTIVES:\n${list(plan.objectives)}`,
+    `CONVERSATION WORKFLOW:\n${workflow}`,
+    `INFORMATION TO COLLECT:\n${fields}`,
+    `APPROVED SERVICES OR PRODUCTS:\n${list(plan.knowledge.services) || 'None supplied; do not guess.'}`,
+    `APPROVED OPENING HOURS:\n${plan.knowledge.openingHours}`,
+    `APPROVED CONTACT DETAILS:\n${plan.knowledge.contactDetails}`,
+    `APPROVED POLICIES:\n${list(plan.knowledge.policies) || 'None supplied; do not guess.'}`,
+    `APPROVED ANSWERS:\n${list(plan.knowledge.approvedAnswers) || 'None supplied; do not guess.'}`,
+    `APPROVED FAQS:\n${faqs || 'No complete FAQs supplied.'}`,
+    `UNKNOWN-ANSWER FALLBACK:\n${plan.knowledge.unknownAnswerFallback}`,
+    `TRANSFER RULES:\n${plan.transfer.enabled ? `Destination: ${plan.transfer.destination || 'not configured'}\nTrigger: ${plan.transfer.conditions}\nOn success: ${plan.transfer.successBehavior}\nOn failure: ${plan.transfer.failureBehavior}\nAvailability fallback: ${plan.transfer.availabilityFallback}` : 'Transfers are disabled.'}`,
+    `CALLBACK RULES:\n${callbackRules}`,
+    `SAFETY RESTRICTIONS:\n${list([...plan.safety.prohibitedTopics, ...plan.safety.businessRestrictions])}`,
+    `ESCALATE TO A PERSON WHEN:\n${list(plan.safety.escalateWhen)}`,
+    `DATA MINIMIZATION:\n${plan.safety.dataMinimization}`,
+  ].join('\n\n');
+}
 
-  const systemPrompt = `You are ${agent.name}, an AI voice employee on an active business phone call.
+export function buildAgentSystemPrompt(
+  agent: Agent,
+  config: AgentConfig,
+  allowSimulatedTransferClaims = true
+): string {
+  const faqsText = config.business_faqs
+    .map((faq) => `Q: ${faq.question}\nA: ${faq.answer}`)
+    .join('\n\n');
+  const fieldsText = config.contact_fields_to_collect
+    .map((field) => `- ${field.label} (${field.name})${field.required ? ' [REQUIRED]' : ''}`)
+    .join('\n');
+
+  return `You are ${agent.name}, an AI voice employee on an active business phone call.
 Agent Type: ${agent.agent_type}
 Language: ${config.supported_languages.join(', ')}
 
@@ -58,17 +106,26 @@ ${fieldsText || 'Collect caller name and contact inquiry details.'}
 TRANSFER RULES:
 ${config.transfer_enabled ? `Transfer permitted to ${config.transfer_phone} when: ${config.transfer_conditions}` : 'Transfers are currently disabled.'}
 
+${buildAgentPlanContext(config.agent_plan)}
+
 CRITICAL VOICE CONVERSATION GUIDELINES:
 1. Speak in concise, natural, spoken English (or the selected language). 1 to 2 spoken sentences per turn.
 2. Do not use markdown, emojis, asterisks, or numbered lists in your speech reply. This is spoken voice over a phone line.
 3. Be respectful, articulate, and focus on moving the conversation forward.
-4. If the caller asks to be transferred and transfer rule is met, politely say you are transferring them right now.
-5. In your response JSON, include:
-   - "reply": the spoken words to the caller
-   - "shouldTransfer": boolean
-   - "isCompleted": boolean (true if caller said goodbye, hung up, or call goals are finalized)
-   - "extractedFields": object of any collected fields (e.g., {"full_name": "...", "phone": "..."})
-   - "sentiment": "positive" | "neutral" | "negative"`;
+4. ${allowSimulatedTransferClaims ? 'Honor configured transfer rules in the simulated conversation.' : 'Do not claim to transfer or schedule a callback; those actions are not connected.'}
+5. Collect only information relevant to the configured objectives and fields.
+6. Respect the configured safety restrictions and do not invent business facts.`;
+}
+
+export async function processConversationTurn(request: ConversationTurnRequest): Promise<ConversationTurnResponse> {
+  const agent = await db.getAgentById(request.agentId, request.businessId);
+  const config = await db.getAgentConfig(request.agentId, request.businessId);
+
+  if (!agent || !config) {
+    throw new Error('Agent or agent configuration was not found for this business.');
+  }
+
+  const systemPrompt = buildAgentSystemPrompt(agent, config);
 
   // Try Gemini AI if API key is present
   if (ai) {

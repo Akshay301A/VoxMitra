@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client.ts';
 import { Agent, AgentConfig, FAQItem, ContactField } from '../types.ts';
+import type { AgentPlan } from '../agents/agentPlan.types.ts';
+import { AgentPlanEditor } from '../components/agents/AgentPlanEditor.tsx';
 
 interface AgentConfigEditorProps {
   agentId: string;
@@ -20,14 +22,17 @@ interface AgentConfigEditorProps {
 }
 
 export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, onBack, onTest }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'conversation' | 'faqs' | 'voice' | 'telephony'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'conversation' | 'faqs' | 'voice' | 'telephony' | 'plan'>('general');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deploying, setDeploying] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [config, setConfig] = useState<AgentConfig | null>(null);
+  const [agentPlan, setAgentPlan] = useState<AgentPlan | null>(null);
+  const [inboundPhoneNumber, setInboundPhoneNumber] = useState('');
 
   // Form Fields
   const [name, setName] = useState('');
@@ -58,7 +63,9 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
         setLoading(true);
         const data = await api.getAgent(agentId);
         setAgent(data.agent);
+        setInboundPhoneNumber(data.agent.inbound_phone_number || '');
         setConfig(data.config);
+        setAgentPlan(data.config?.agent_plan || null);
 
         setName(data.agent.name);
         setDescription(data.agent.description);
@@ -95,31 +102,80 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
     setSaving(true);
     setSaveSuccess(false);
     try {
+      const structuredPlan = activeTab === 'plan' ? agentPlan : null;
+      const nextPlan = structuredPlan
+        ? {
+            ...structuredPlan,
+            voice: {
+              ...structuredPlan.voice,
+              voiceId,
+              voiceName,
+              language: languages[0] || structuredPlan.voice.language,
+              speakingRate: config?.voice_settings?.speaking_rate ?? structuredPlan.voice.speakingRate,
+            },
+          }
+        : undefined;
       await api.updateAgent(agentId, {
-        name,
-        description,
+        name: nextPlan?.identity.name || name,
+        description: nextPlan?.identity.businessContext || description,
         status,
       });
 
+      const planContactFields: ContactField[] = nextPlan
+        ? nextPlan.informationFields.map((field) => {
+            const name = `${field.name} ${field.description}`.toLowerCase();
+            const type = name.includes('phone') || name.includes('number')
+              ? 'phone'
+              : name.includes('email')
+                ? 'email'
+                : name.includes('date') || name.includes('time')
+                  ? 'date'
+                  : 'text';
+            return {
+              name: field.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+              label: field.description || field.name,
+              required: field.required,
+              type,
+            };
+          })
+        : contactFields;
+
       await api.saveAgentConfig(agentId, {
-        greeting,
-        instructions,
-        objectives,
-        business_faqs: faqs,
+        greeting: nextPlan?.identity.greeting || greeting,
+        instructions: nextPlan?.identity.tone || instructions,
+        objectives: nextPlan?.objectives.join('\n') || objectives,
+        business_faqs: nextPlan?.knowledge.faqs || faqs,
         voice_id: voiceId,
         voice_name: voiceName,
         voice_settings: {
           stability,
           similarity_boost: similarity,
+          speaking_rate: config?.voice_settings?.speaking_rate,
         },
         supported_languages: languages,
         max_duration_seconds: maxDuration,
-        transfer_enabled: transferEnabled,
-        transfer_phone: transferPhone,
-        transfer_conditions: transferConditions,
-        callback_instructions: callbackInstructions,
-        contact_fields_to_collect: contactFields,
+        transfer_enabled: nextPlan?.transfer.enabled ?? transferEnabled,
+        transfer_phone: nextPlan?.transfer.destination ?? transferPhone,
+        transfer_conditions: nextPlan?.transfer.conditions || transferConditions,
+        callback_instructions: nextPlan?.callback.enabled
+          ? `Ask permission before scheduling. Confirm date, time, and timezone; record callback status. Ask whether the person is available before attempting transfer. Offer rescheduling if unavailable, stop on opt-out, and stop when the configured limit of ${nextPlan.callback.maxRetries} retries is reached.`
+          : callbackInstructions,
+        contact_fields_to_collect: planContactFields,
+        agent_plan: nextPlan,
       });
+      if (nextPlan) {
+        setAgentPlan(nextPlan);
+        setName(nextPlan.identity.name);
+        setDescription(nextPlan.identity.businessContext);
+        setGreeting(nextPlan.identity.greeting);
+        setInstructions(nextPlan.identity.tone);
+        setObjectives(nextPlan.objectives.join('\n'));
+        setFaqs(nextPlan.knowledge.faqs);
+        setTransferEnabled(nextPlan.transfer.enabled);
+        setTransferPhone(nextPlan.transfer.destination);
+        setTransferConditions(nextPlan.transfer.conditions);
+        setContactFields(planContactFields);
+      }
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -127,6 +183,38 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
       setError(err.message || 'Failed saving updates');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeployInboundAgent = async () => {
+    setError(null);
+    setDeploying(true);
+    try {
+      const result = await api.deployInboundAgent(agentId, inboundPhoneNumber);
+      setAgent(result.agent);
+      setStatus(result.agent.status);
+      setInboundPhoneNumber(result.agent.inbound_phone_number || '');
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err: any) {
+      setError(err.message || 'Failed deploying inbound agent');
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  const handleDeactivateInboundAgent = async () => {
+    setError(null);
+    setDeploying(true);
+    try {
+      const result = await api.deactivateInboundAgent(agentId);
+      setAgent(result.agent);
+      setStatus(result.agent.status);
+      setInboundPhoneNumber('');
+    } catch (err: any) {
+      setError(err.message || 'Failed deactivating inbound agent');
+    } finally {
+      setDeploying(false);
     }
   };
 
@@ -267,6 +355,18 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
         >
           Telephony Rules & Data Fields
         </button>
+        {agent?.status === 'draft' || agentPlan ? (
+          <button
+            onClick={() => setActiveTab('plan')}
+            className={`pb-3 px-3 transition-colors border-b-2 whitespace-nowrap ${
+              activeTab === 'plan'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Structured Agent Plan
+          </button>
+        ) : null}
       </div>
 
       {/* TAB 1: General & Persona */}
@@ -287,10 +387,11 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
               <label className="block text-xs font-semibold text-slate-700">Deployment Status</label>
               <select
                 value={status}
-                onChange={(e) => setStatus(e.target.value as any)}
+                onChange={(e) => setStatus(e.target.value as 'active' | 'paused' | 'draft')}
+                disabled={agent?.status === 'draft'}
                 className="mt-1 block w-full text-xs border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900"
               >
-                <option value="active">Active (Available for live call handling)</option>
+                <option value="active" disabled>Active (use inbound deployment to activate)</option>
                 <option value="paused">Paused (Holding incoming/outbound calls)</option>
                 <option value="draft">Draft (Testing only)</option>
               </select>
@@ -499,6 +600,49 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
       {/* TAB 5: Telephony & Data Fields */}
       {activeTab === 'telephony' && (
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-6">
+          {agent?.agent_type === 'inbound_receptionist' && (
+            <section className="rounded-lg border border-indigo-200 bg-indigo-50 p-4 space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Inbound phone deployment</h3>
+                <p className="mt-1 text-xs text-slate-600">
+                  Assign an Exotel number you already provisioned. This does not purchase a number.
+                  Save your agent configuration before activating it.
+                </p>
+                <p className="mt-1 text-xs text-slate-600">
+                  Deployment status: <strong>{agent.status}</strong>
+                  {agent.inbound_phone_number ? ` · ${agent.inbound_phone_number}` : ' · no number assigned'}
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  type="tel"
+                  value={inboundPhoneNumber}
+                  onChange={(event) => setInboundPhoneNumber(event.target.value)}
+                  placeholder="Provisioned Exotel number (8–15 digits)"
+                  disabled={deploying}
+                  className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white p-2.5 text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={handleDeployInboundAgent}
+                  disabled={deploying || !inboundPhoneNumber.trim()}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                >
+                  {deploying ? 'Working…' : 'Assign number & activate'}
+                </button>
+                {agent.status === 'active' && (
+                  <button
+                    type="button"
+                    onClick={handleDeactivateInboundAgent}
+                    disabled={deploying}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                  >
+                    Deactivate
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <label className="block text-xs font-semibold text-slate-700">
@@ -556,7 +700,6 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
               </div>
             </div>
           )}
-
           <div>
             <label className="block text-xs font-semibold text-slate-700">Callback Instructions</label>
             <input
@@ -624,6 +767,18 @@ export const AgentConfigEditor: React.FC<AgentConfigEditorProps> = ({ agentId, o
             </div>
           </div>
         </div>
+      )}
+      {activeTab === 'plan' && (
+        agentPlan ? (
+          <AgentPlanEditor plan={agentPlan} onChange={setAgentPlan} mode="edit" />
+        ) : (
+          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center">
+            <h2 className="text-base font-semibold text-slate-900">No structured plan saved</h2>
+            <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-slate-600">
+              This agent was created before the guided wizard. Its existing settings remain editable in the other tabs.
+            </p>
+          </div>
+        )
       )}
     </div>
   );
