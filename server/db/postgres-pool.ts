@@ -20,11 +20,24 @@ export type PostgresStartupDiagnosticCategory =
   | 'schema'
   | 'unknown';
 
+export type PostgresStartupDiagnosticCheck =
+  | 'required-tables'
+  | 'required-columns'
+  | 'column-types'
+  | 'key-tenant-constraints'
+  | 'required-indexes'
+  | 'supabase-client-roles'
+  | 'runtime-role-policy'
+  | 'runtime-role-ownership'
+  | 'supabase-client-access-lockdown'
+  | 'runtime-role-grants';
+
 export class PostgresStartupDiagnosticError extends DatabaseConfigurationError {
   constructor(
     readonly category: PostgresStartupDiagnosticCategory,
     message: string,
-    readonly code?: string
+    readonly code?: string,
+    readonly check?: PostgresStartupDiagnosticCheck
   ) {
     super(message);
     this.name = 'PostgresStartupDiagnosticError';
@@ -82,30 +95,58 @@ function classifyPostgresError(
 
 function classifyConfigurationError(
   error: DatabaseConfigurationError
-): { category: 'permission' | 'schema'; message: string } | undefined {
-  const permissionMessages = [
-    'Required Supabase client roles are missing; access lockdown cannot be verified.',
-    'PostgreSQL runtime role must be a dedicated non-privileged server role.',
-    'PostgreSQL runtime role must not own VoxMitra tables.',
-    'Supabase client-access lockdown is not applied to all VoxMitra tables.',
-    'PostgreSQL runtime role lacks required VoxMitra schema or table privileges.',
-  ];
-  if (permissionMessages.includes(error.message)) {
-    return { category: 'permission', message: error.message };
-  }
-
-  const schemaMessages = [
-    'PostgreSQL schema is missing required VoxMitra tables.',
-    'PostgreSQL schema is missing required VoxMitra columns.',
-    'PostgreSQL schema contains incompatible VoxMitra column types.',
-    'PostgreSQL schema is missing required VoxMitra key or tenant constraints.',
-    'PostgreSQL schema is missing required VoxMitra indexes.',
-  ];
-  if (schemaMessages.includes(error.message)) {
-    return { category: 'schema', message: error.message };
-  }
-
-  return undefined;
+): {
+  category: 'permission' | 'schema';
+  check: PostgresStartupDiagnosticCheck;
+  message: string;
+} | undefined {
+  const diagnostics: Record<string, {
+    category: 'permission' | 'schema';
+    check: PostgresStartupDiagnosticCheck;
+  }> = {
+    'Required Supabase client roles are missing; access lockdown cannot be verified.': {
+      category: 'permission',
+      check: 'supabase-client-roles',
+    },
+    'PostgreSQL runtime role must be a dedicated non-privileged server role.': {
+      category: 'permission',
+      check: 'runtime-role-policy',
+    },
+    'PostgreSQL runtime role must not own VoxMitra tables.': {
+      category: 'permission',
+      check: 'runtime-role-ownership',
+    },
+    'Supabase client-access lockdown is not applied to all VoxMitra tables.': {
+      category: 'permission',
+      check: 'supabase-client-access-lockdown',
+    },
+    'PostgreSQL runtime role lacks required VoxMitra schema or table privileges.': {
+      category: 'permission',
+      check: 'runtime-role-grants',
+    },
+    'PostgreSQL schema is missing required VoxMitra tables.': {
+      category: 'schema',
+      check: 'required-tables',
+    },
+    'PostgreSQL schema is missing required VoxMitra columns.': {
+      category: 'schema',
+      check: 'required-columns',
+    },
+    'PostgreSQL schema contains incompatible VoxMitra column types.': {
+      category: 'schema',
+      check: 'column-types',
+    },
+    'PostgreSQL schema is missing required VoxMitra key or tenant constraints.': {
+      category: 'schema',
+      check: 'key-tenant-constraints',
+    },
+    'PostgreSQL schema is missing required VoxMitra indexes.': {
+      category: 'schema',
+      check: 'required-indexes',
+    },
+  };
+  const diagnostic = diagnostics[error.message];
+  return diagnostic ? { ...diagnostic, message: error.message } : undefined;
 }
 
 const EXPECTED_TABLES = [
@@ -601,7 +642,12 @@ export async function verifyPostgresSchema(
     if (error instanceof DatabaseConfigurationError) {
       const diagnostic = classifyConfigurationError(error);
       if (diagnostic) {
-        throw new PostgresStartupDiagnosticError(diagnostic.category, diagnostic.message);
+        throw new PostgresStartupDiagnosticError(
+          diagnostic.category,
+          diagnostic.message,
+          undefined,
+          diagnostic.check
+        );
       }
       throw new PostgresStartupDiagnosticError(
         'unknown',

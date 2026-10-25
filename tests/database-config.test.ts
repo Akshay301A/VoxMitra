@@ -186,7 +186,7 @@ test('PostgreSQL startup diagnostics classify known connection errors without ex
     { code: 'ECONNREFUSED', category: 'network' },
     { code: '3D000', category: 'database-not-found' },
     { code: '42501', category: 'permission' },
-  ] as const;
+  ];
 
   for (const { code, category } of cases) {
     await assert.rejects(
@@ -209,20 +209,65 @@ test('PostgreSQL startup diagnostics classify known connection errors without ex
   }
 });
 
-test('PostgreSQL startup diagnostics identify schema validation failures safely', async () => {
-  await assert.rejects(
-    verifyPostgresSchema({
-      async query(text) {
-        if (text === 'SELECT 1') return { rows: [] };
-        if (text.includes('information_schema.tables')) return { rows: [] };
-        throw new Error('unexpected query');
+test('PostgreSQL startup diagnostics identify each failed schema check with a fixed identifier', async () => {
+  const tables = [
+    'businesses', 'users', 'agents', 'agent_configurations', 'call_records',
+    'callbacks', 'integrations', 'usage_records', 'wallets', 'wallet_transactions',
+    'wallet_reservations', 'wallet_autotopup_settings', 'payment_orders',
+    'billing_configs', 'wallet_notifications', 'campaigns', 'leads',
+    'knowledge_sources', 'onboarding',
+  ].map((table_name) => ({ table_name }));
+  const failingChecks = [
+    {
+      check: 'required-tables',
+      fails(text: string) { return text.includes('information_schema.tables'); },
+      failureRows: [] as Record<string, unknown>[],
+    },
+    {
+      check: 'required-columns',
+      fails(text: string) {
+        return text.includes('information_schema.columns') &&
+          !text.includes('unnest($1::text[], $2::text[], $3::text[])');
       },
-    }),
-    (error: unknown) =>
-      error instanceof PostgresStartupDiagnosticError &&
-      error.category === 'schema' &&
-      error.message === 'PostgreSQL schema is missing required VoxMitra tables.'
-  );
+      failureRows: [{ table_name: 'hidden_table', column_name: 'hidden_column' }],
+    },
+    {
+      check: 'column-types',
+      fails(text: string) {
+        return text.includes('information_schema.columns') &&
+          text.includes('unnest($1::text[], $2::text[], $3::text[])');
+      },
+      failureRows: [{ table_name: 'hidden_table', column_name: 'hidden_column' }],
+    },
+    {
+      check: 'key-tenant-constraints',
+      fails(text: string) { return text.includes('pg_constraint'); },
+      failureRows: [{ table_name: 'hidden_table', constraint_name: 'hidden_constraint' }],
+    },
+    {
+      check: 'required-indexes',
+      fails(text: string) { return text.includes('pg_indexes'); },
+      failureRows: [{ index_name: 'hidden_index' }],
+    },
+  ] as const;
+
+  for (const failingCheck of failingChecks) {
+    await assert.rejects(
+      verifyPostgresSchema({
+        async query(text) {
+          if (text === 'SELECT 1') return { rows: [] };
+          if (failingCheck.fails(text)) return { rows: [...failingCheck.failureRows] };
+          if (text.includes('information_schema.tables')) return { rows: tables };
+          return { rows: [] };
+        },
+      }),
+      (error: unknown) =>
+        error instanceof PostgresStartupDiagnosticError &&
+        error.category === 'schema' &&
+        error.check === failingCheck.check &&
+        !error.message.includes('hidden')
+    );
+  }
 });
 
 test('PostgreSQL startup diagnostics use the generic fallback for unknown errors', async () => {
@@ -372,6 +417,8 @@ test('PostgreSQL startup refuses to run while Supabase client roles can access t
     }),
     (error: unknown) =>
       error instanceof DatabaseConfigurationError &&
+      error instanceof PostgresStartupDiagnosticError &&
+      error.check === 'supabase-client-access-lockdown' &&
       error.message.includes('access lockdown')
   );
 });
@@ -417,6 +464,7 @@ test('PostgreSQL startup refuses an application role without VoxMitra table gran
     (error: unknown) =>
       error instanceof PostgresStartupDiagnosticError &&
       error.category === 'permission' &&
+      error.check === 'runtime-role-grants' &&
       error.message.includes('runtime role lacks')
   );
 });
