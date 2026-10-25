@@ -37,7 +37,8 @@ export class PostgresStartupDiagnosticError extends DatabaseConfigurationError {
     readonly category: PostgresStartupDiagnosticCategory,
     message: string,
     readonly code?: string,
-    readonly check?: PostgresStartupDiagnosticCheck
+    readonly check?: PostgresStartupDiagnosticCheck,
+    readonly item?: string
   ) {
     super(message);
     this.name = 'PostgresStartupDiagnosticError';
@@ -501,7 +502,26 @@ export async function verifyPostgresSchema(
       [tableNames, columnNames]
     );
     if (columnsResult.rows.length) {
-      throw new DatabaseConfigurationError('PostgreSQL schema is missing required VoxMitra columns.');
+      const missingColumnIds = columnsResult.rows.flatMap((row) => {
+        const table = row.table_name;
+        const column = row.column_name;
+        if (
+          typeof table !== 'string' ||
+          typeof column !== 'string' ||
+          !Object.prototype.hasOwnProperty.call(REQUIRED_COLUMNS, table) ||
+          !REQUIRED_COLUMNS[table].includes(column)
+        ) {
+          return [];
+        }
+        return [`${table}.${column}`];
+      }).sort();
+      throw new PostgresStartupDiagnosticError(
+        'schema',
+        'PostgreSQL schema is missing required VoxMitra columns.',
+        undefined,
+        'required-columns',
+        missingColumnIds[0]
+      );
     }
 
     const typeTables: string[] = [];
@@ -639,6 +659,7 @@ export async function verifyPostgresSchema(
       throw new DatabaseConfigurationError('PostgreSQL runtime role lacks required VoxMitra schema or table privileges.');
     }
   } catch (error) {
+    if (error instanceof PostgresStartupDiagnosticError) throw error;
     if (error instanceof DatabaseConfigurationError) {
       const diagnostic = classifyConfigurationError(error);
       if (diagnostic) {

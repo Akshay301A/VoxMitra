@@ -270,6 +270,43 @@ test('PostgreSQL startup diagnostics identify each failed schema check with a fi
   }
 });
 
+test('PostgreSQL startup diagnostics identify a missing required column by allowlisted identifier', async () => {
+  const tables = [
+    'businesses', 'users', 'agents', 'agent_configurations', 'call_records',
+    'callbacks', 'integrations', 'usage_records', 'wallets', 'wallet_transactions',
+    'wallet_reservations', 'wallet_autotopup_settings', 'payment_orders',
+    'billing_configs', 'wallet_notifications', 'campaigns', 'leads',
+    'knowledge_sources', 'onboarding',
+  ].map((table_name) => ({ table_name }));
+
+  await assert.rejects(
+    verifyPostgresSchema({
+      async query(text) {
+        if (text === 'SELECT 1') return { rows: [] };
+        if (text.includes('information_schema.tables')) return { rows: tables };
+        if (
+          text.includes('information_schema.columns') &&
+          !text.includes('unnest($1::text[], $2::text[], $3::text[])')
+        ) {
+          return {
+            rows: [{
+              table_name: 'agents',
+              column_name: 'inbound_phone_number',
+            }],
+          };
+        }
+        return { rows: [] };
+      },
+    }),
+    (error: unknown) =>
+      error instanceof PostgresStartupDiagnosticError &&
+      error.category === 'schema' &&
+      error.check === 'required-columns' &&
+      error.item === 'agents.inbound_phone_number' &&
+      !error.message.includes('agents')
+  );
+});
+
 test('PostgreSQL startup diagnostics use the generic fallback for unknown errors', async () => {
   await assert.rejects(
     verifyPostgresSchema({

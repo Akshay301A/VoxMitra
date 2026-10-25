@@ -879,7 +879,8 @@ if (process.env.NODE_ENV !== 'test') {
     ) {
       const code = error.code ? ` (${error.code})` : '';
       const check = error.check ? ` [check: ${error.check}]` : '';
-      console.error(`VoxMitra startup failed. PostgreSQL diagnostic: ${error.category}${check}${code}.`);
+      const item = error.item ? ` [item: ${error.item}]` : '';
+      console.error(`VoxMitra startup failed. PostgreSQL diagnostic: ${error.category}${check}${item}${code}.`);
     } else {
       console.error('VoxMitra startup failed. Verify database configuration and the required public schema.');
     }
