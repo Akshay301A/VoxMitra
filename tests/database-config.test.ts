@@ -201,6 +201,7 @@ test('PostgreSQL startup diagnostics classify known connection errors without ex
       (error: unknown) =>
         error instanceof PostgresStartupDiagnosticError &&
         error.category === category &&
+        error.code === code &&
         !error.message.includes('sensitive') &&
         !error.message.includes('password') &&
         !error.message.includes('connection URL')
@@ -234,9 +235,27 @@ test('PostgreSQL startup diagnostics use the generic fallback for unknown errors
     (error: unknown) =>
       error instanceof PostgresStartupDiagnosticError &&
       error.category === 'unknown' &&
+      error.code === undefined &&
       error.message === 'PostgreSQL connection or schema verification failed.' &&
       !error.message.includes('sensitive') &&
       !error.message.includes('API key')
+  );
+});
+
+test('PostgreSQL startup diagnostics reject arbitrary error codes', async () => {
+  await assert.rejects(
+    verifyPostgresSchema({
+      async query() {
+        throw Object.assign(new Error('private data in message'), {
+          code: 'private-data-in-code',
+        });
+      },
+    }),
+    (error: unknown) =>
+      error instanceof PostgresStartupDiagnosticError &&
+      error.category === 'unknown' &&
+      error.code === undefined &&
+      !error.message.includes('private')
   );
 });
 

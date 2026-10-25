@@ -23,7 +23,8 @@ export type PostgresStartupDiagnosticCategory =
 export class PostgresStartupDiagnosticError extends DatabaseConfigurationError {
   constructor(
     readonly category: PostgresStartupDiagnosticCategory,
-    message: string
+    message: string,
+    readonly code?: string
   ) {
     super(message);
     this.name = 'PostgresStartupDiagnosticError';
@@ -62,17 +63,21 @@ function getErrorCode(error: unknown): string | undefined {
   return typeof error.code === 'string' ? error.code : undefined;
 }
 
-function classifyPostgresError(error: unknown): PostgresStartupDiagnosticCategory {
+function classifyPostgresError(
+  error: unknown
+): { category: PostgresStartupDiagnosticCategory; code?: string } {
   const code = getErrorCode(error);
-  if (!code) return 'unknown';
-  if (TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_') || code.startsWith('ERR_SSL_')) {
-    return 'tls';
+  if (!code) return { category: 'unknown' };
+  if (TLS_ERROR_CODES.has(code)) {
+    return { category: 'tls', code };
   }
-  if (code.startsWith('28')) return 'authentication';
-  if (code === '3D000') return 'database-not-found';
-  if (code === '42501') return 'permission';
-  if (NETWORK_ERROR_CODES.has(code) || code.startsWith('08')) return 'network';
-  return 'unknown';
+  if (/^28[A-Z0-9]{3}$/.test(code)) return { category: 'authentication', code };
+  if (code === '3D000') return { category: 'database-not-found', code };
+  if (code === '42501') return { category: 'permission', code };
+  if (NETWORK_ERROR_CODES.has(code) || /^08[A-Z0-9]{3}$/.test(code)) {
+    return { category: 'network', code };
+  }
+  return { category: 'unknown' };
 }
 
 function classifyConfigurationError(
@@ -603,9 +608,11 @@ export async function verifyPostgresSchema(
         'PostgreSQL connection or schema verification failed.'
       );
     }
+    const diagnostic = classifyPostgresError(error);
     throw new PostgresStartupDiagnosticError(
-      classifyPostgresError(error),
-      'PostgreSQL connection or schema verification failed.'
+      diagnostic.category,
+      'PostgreSQL connection or schema verification failed.',
+      diagnostic.code
     );
   }
 }

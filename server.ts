@@ -877,7 +877,8 @@ if (process.env.NODE_ENV !== 'test') {
       error instanceof PostgresStartupDiagnosticError &&
       error.category !== 'unknown'
     ) {
-      console.error(`VoxMitra startup failed. PostgreSQL diagnostic category: ${error.category}.`);
+      const code = error.code ? ` (${error.code})` : '';
+      console.error(`VoxMitra startup failed. PostgreSQL diagnostic: ${error.category}${code}.`);
     } else {
       console.error('VoxMitra startup failed. Verify database configuration and the required public schema.');
     }
