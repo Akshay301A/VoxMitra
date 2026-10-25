@@ -10,6 +10,7 @@ import {
 import {
   checkPostgresConnection,
   createPostgresPoolOptions,
+  PostgresStartupDiagnosticError,
   verifyPostgresSchema,
 } from '../server/db/postgres-pool.ts';
 
@@ -178,6 +179,67 @@ test('PostgreSQL schema check verifies all required tables and columns safely', 
   );
 });
 
+test('PostgreSQL startup diagnostics classify known connection errors without exposing messages', async () => {
+  const cases = [
+    { code: 'SELF_SIGNED_CERT_IN_CHAIN', category: 'tls' },
+    { code: '28P01', category: 'authentication' },
+    { code: 'ECONNREFUSED', category: 'network' },
+    { code: '3D000', category: 'database-not-found' },
+    { code: '42501', category: 'permission' },
+  ] as const;
+
+  for (const { code, category } of cases) {
+    await assert.rejects(
+      verifyPostgresSchema({
+        async query() {
+          throw Object.assign(
+            new Error('sensitive message with host, username, password, and connection URL'),
+            { code }
+          );
+        },
+      }),
+      (error: unknown) =>
+        error instanceof PostgresStartupDiagnosticError &&
+        error.category === category &&
+        !error.message.includes('sensitive') &&
+        !error.message.includes('password') &&
+        !error.message.includes('connection URL')
+    );
+  }
+});
+
+test('PostgreSQL startup diagnostics identify schema validation failures safely', async () => {
+  await assert.rejects(
+    verifyPostgresSchema({
+      async query(text) {
+        if (text === 'SELECT 1') return { rows: [] };
+        if (text.includes('information_schema.tables')) return { rows: [] };
+        throw new Error('unexpected query');
+      },
+    }),
+    (error: unknown) =>
+      error instanceof PostgresStartupDiagnosticError &&
+      error.category === 'schema' &&
+      error.message === 'PostgreSQL schema is missing required VoxMitra tables.'
+  );
+});
+
+test('PostgreSQL startup diagnostics use the generic fallback for unknown errors', async () => {
+  await assert.rejects(
+    verifyPostgresSchema({
+      async query() {
+        throw new Error('sensitive connection string and API key');
+      },
+    }),
+    (error: unknown) =>
+      error instanceof PostgresStartupDiagnosticError &&
+      error.category === 'unknown' &&
+      error.message === 'PostgreSQL connection or schema verification failed.' &&
+      !error.message.includes('sensitive') &&
+      !error.message.includes('API key')
+  );
+});
+
 test('PostgreSQL schema check rejects incompatible identifier and JSONB column types', async () => {
   await assert.rejects(
     verifyPostgresSchema({
@@ -334,7 +396,8 @@ test('PostgreSQL startup refuses an application role without VoxMitra table gran
       },
     }),
     (error: unknown) =>
-      error instanceof DatabaseConfigurationError &&
+      error instanceof PostgresStartupDiagnosticError &&
+      error.category === 'permission' &&
       error.message.includes('runtime role lacks')
   );
 });

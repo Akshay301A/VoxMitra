@@ -8,7 +8,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { db, DEVELOPMENT_DEMO_USER_ID, User } from './server/db/database.ts';
-import { closePostgresPool, verifyPostgresSchema } from './server/db/postgres-pool.ts';
+import {
+  closePostgresPool,
+  PostgresStartupDiagnosticError,
+  verifyPostgresSchema,
+} from './server/db/postgres-pool.ts';
 import { readDatabaseConfiguration } from './server/db/backend.ts';
 import { isBillableRealCall } from './server/db/call-records.ts';
 import { getVoiceCatalog, testSpeechSynthesis } from './server/services/elevenlabs.ts';
@@ -868,8 +872,15 @@ async function startServer() {
 export { app };
 
 if (process.env.NODE_ENV !== 'test') {
-  void startServer().catch(async () => {
-    console.error('VoxMitra startup failed. Verify database configuration and the required public schema.');
+  void startServer().catch(async (error: unknown) => {
+    if (
+      error instanceof PostgresStartupDiagnosticError &&
+      error.category !== 'unknown'
+    ) {
+      console.error(`VoxMitra startup failed. PostgreSQL diagnostic category: ${error.category}.`);
+    } else {
+      console.error('VoxMitra startup failed. Verify database configuration and the required public schema.');
+    }
     try {
       await closePostgresPool();
     } catch {

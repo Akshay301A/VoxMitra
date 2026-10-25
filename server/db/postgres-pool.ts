@@ -11,6 +11,98 @@ export interface DatabaseHealthResult {
   message?: string;
 }
 
+export type PostgresStartupDiagnosticCategory =
+  | 'tls'
+  | 'authentication'
+  | 'network'
+  | 'database-not-found'
+  | 'permission'
+  | 'schema'
+  | 'unknown';
+
+export class PostgresStartupDiagnosticError extends DatabaseConfigurationError {
+  constructor(
+    readonly category: PostgresStartupDiagnosticCategory,
+    message: string
+  ) {
+    super(message);
+    this.name = 'PostgresStartupDiagnosticError';
+  }
+}
+
+const TLS_ERROR_CODES = new Set([
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_REVOKED',
+  'CERT_SIGNATURE_FAILURE',
+  'CERT_UNTRUSTED',
+  'INVALID_CA',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
+const NETWORK_ERROR_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'PGCONNECT_TIMEOUT',
+]);
+
+function getErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
+}
+
+function classifyPostgresError(error: unknown): PostgresStartupDiagnosticCategory {
+  const code = getErrorCode(error);
+  if (!code) return 'unknown';
+  if (TLS_ERROR_CODES.has(code) || code.startsWith('ERR_TLS_') || code.startsWith('ERR_SSL_')) {
+    return 'tls';
+  }
+  if (code.startsWith('28')) return 'authentication';
+  if (code === '3D000') return 'database-not-found';
+  if (code === '42501') return 'permission';
+  if (NETWORK_ERROR_CODES.has(code) || code.startsWith('08')) return 'network';
+  return 'unknown';
+}
+
+function classifyConfigurationError(
+  error: DatabaseConfigurationError
+): { category: 'permission' | 'schema'; message: string } | undefined {
+  const permissionMessages = [
+    'Required Supabase client roles are missing; access lockdown cannot be verified.',
+    'PostgreSQL runtime role must be a dedicated non-privileged server role.',
+    'PostgreSQL runtime role must not own VoxMitra tables.',
+    'Supabase client-access lockdown is not applied to all VoxMitra tables.',
+    'PostgreSQL runtime role lacks required VoxMitra schema or table privileges.',
+  ];
+  if (permissionMessages.includes(error.message)) {
+    return { category: 'permission', message: error.message };
+  }
+
+  const schemaMessages = [
+    'PostgreSQL schema is missing required VoxMitra tables.',
+    'PostgreSQL schema is missing required VoxMitra columns.',
+    'PostgreSQL schema contains incompatible VoxMitra column types.',
+    'PostgreSQL schema is missing required VoxMitra key or tenant constraints.',
+    'PostgreSQL schema is missing required VoxMitra indexes.',
+  ];
+  if (schemaMessages.includes(error.message)) {
+    return { category: 'schema', message: error.message };
+  }
+
+  return undefined;
+}
+
 const EXPECTED_TABLES = [
   'businesses',
   'users',
@@ -501,8 +593,20 @@ export async function verifyPostgresSchema(
       throw new DatabaseConfigurationError('PostgreSQL runtime role lacks required VoxMitra schema or table privileges.');
     }
   } catch (error) {
-    if (error instanceof DatabaseConfigurationError) throw error;
-    throw new DatabaseConfigurationError('PostgreSQL connection or schema verification failed.');
+    if (error instanceof DatabaseConfigurationError) {
+      const diagnostic = classifyConfigurationError(error);
+      if (diagnostic) {
+        throw new PostgresStartupDiagnosticError(diagnostic.category, diagnostic.message);
+      }
+      throw new PostgresStartupDiagnosticError(
+        'unknown',
+        'PostgreSQL connection or schema verification failed.'
+      );
+    }
+    throw new PostgresStartupDiagnosticError(
+      classifyPostgresError(error),
+      'PostgreSQL connection or schema verification failed.'
+    );
   }
 }
 
