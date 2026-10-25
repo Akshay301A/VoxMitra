@@ -11,145 +11,6 @@ export interface DatabaseHealthResult {
   message?: string;
 }
 
-export type PostgresStartupDiagnosticCategory =
-  | 'tls'
-  | 'authentication'
-  | 'network'
-  | 'database-not-found'
-  | 'permission'
-  | 'schema'
-  | 'unknown';
-
-export type PostgresStartupDiagnosticCheck =
-  | 'required-tables'
-  | 'required-columns'
-  | 'column-types'
-  | 'key-tenant-constraints'
-  | 'required-indexes'
-  | 'supabase-client-roles'
-  | 'runtime-role-policy'
-  | 'runtime-role-ownership'
-  | 'supabase-client-access-lockdown'
-  | 'runtime-role-grants';
-
-export class PostgresStartupDiagnosticError extends DatabaseConfigurationError {
-  constructor(
-    readonly category: PostgresStartupDiagnosticCategory,
-    message: string,
-    readonly code?: string,
-    readonly check?: PostgresStartupDiagnosticCheck,
-    readonly item?: string
-  ) {
-    super(message);
-    this.name = 'PostgresStartupDiagnosticError';
-  }
-}
-
-const TLS_ERROR_CODES = new Set([
-  'SELF_SIGNED_CERT_IN_CHAIN',
-  'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'UNABLE_TO_GET_ISSUER_CERT',
-  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
-  'CERT_HAS_EXPIRED',
-  'CERT_NOT_YET_VALID',
-  'CERT_REVOKED',
-  'CERT_SIGNATURE_FAILURE',
-  'CERT_UNTRUSTED',
-  'INVALID_CA',
-  'ERR_TLS_CERT_ALTNAME_INVALID',
-]);
-
-const NETWORK_ERROR_CODES = new Set([
-  'ECONNABORTED',
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'ETIMEDOUT',
-  'PGCONNECT_TIMEOUT',
-]);
-
-function getErrorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
-  return typeof error.code === 'string' ? error.code : undefined;
-}
-
-function classifyPostgresError(
-  error: unknown
-): { category: PostgresStartupDiagnosticCategory; code?: string } {
-  const code = getErrorCode(error);
-  if (!code) return { category: 'unknown' };
-  if (TLS_ERROR_CODES.has(code)) {
-    return { category: 'tls', code };
-  }
-  if (/^28[A-Z0-9]{3}$/.test(code)) return { category: 'authentication', code };
-  if (code === '3D000') return { category: 'database-not-found', code };
-  if (code === '42501') return { category: 'permission', code };
-  if (NETWORK_ERROR_CODES.has(code) || /^08[A-Z0-9]{3}$/.test(code)) {
-    return { category: 'network', code };
-  }
-  return { category: 'unknown' };
-}
-
-function classifyConfigurationError(
-  error: DatabaseConfigurationError
-): {
-  category: 'permission' | 'schema';
-  check: PostgresStartupDiagnosticCheck;
-  message: string;
-} | undefined {
-  const diagnostics: Record<string, {
-    category: 'permission' | 'schema';
-    check: PostgresStartupDiagnosticCheck;
-  }> = {
-    'Required Supabase client roles are missing; access lockdown cannot be verified.': {
-      category: 'permission',
-      check: 'supabase-client-roles',
-    },
-    'PostgreSQL runtime role must be a dedicated non-privileged server role.': {
-      category: 'permission',
-      check: 'runtime-role-policy',
-    },
-    'PostgreSQL runtime role must not own VoxMitra tables.': {
-      category: 'permission',
-      check: 'runtime-role-ownership',
-    },
-    'Supabase client-access lockdown is not applied to all VoxMitra tables.': {
-      category: 'permission',
-      check: 'supabase-client-access-lockdown',
-    },
-    'PostgreSQL runtime role lacks required VoxMitra schema or table privileges.': {
-      category: 'permission',
-      check: 'runtime-role-grants',
-    },
-    'PostgreSQL schema is missing required VoxMitra tables.': {
-      category: 'schema',
-      check: 'required-tables',
-    },
-    'PostgreSQL schema is missing required VoxMitra columns.': {
-      category: 'schema',
-      check: 'required-columns',
-    },
-    'PostgreSQL schema contains incompatible VoxMitra column types.': {
-      category: 'schema',
-      check: 'column-types',
-    },
-    'PostgreSQL schema is missing required VoxMitra key or tenant constraints.': {
-      category: 'schema',
-      check: 'key-tenant-constraints',
-    },
-    'PostgreSQL schema is missing required VoxMitra indexes.': {
-      category: 'schema',
-      check: 'required-indexes',
-    },
-  };
-  const diagnostic = diagnostics[error.message];
-  return diagnostic ? { ...diagnostic, message: error.message } : undefined;
-}
-
 const EXPECTED_TABLES = [
   'businesses',
   'users',
@@ -502,26 +363,7 @@ export async function verifyPostgresSchema(
       [tableNames, columnNames]
     );
     if (columnsResult.rows.length) {
-      const missingColumnIds = columnsResult.rows.flatMap((row) => {
-        const table = row.table_name;
-        const column = row.column_name;
-        if (
-          typeof table !== 'string' ||
-          typeof column !== 'string' ||
-          !Object.prototype.hasOwnProperty.call(REQUIRED_COLUMNS, table) ||
-          !REQUIRED_COLUMNS[table].includes(column)
-        ) {
-          return [];
-        }
-        return [`${table}.${column}`];
-      }).sort();
-      throw new PostgresStartupDiagnosticError(
-        'schema',
-        'PostgreSQL schema is missing required VoxMitra columns.',
-        undefined,
-        'required-columns',
-        missingColumnIds[0]
-      );
+      throw new DatabaseConfigurationError('PostgreSQL schema is missing required VoxMitra columns.');
     }
 
     const typeTables: string[] = [];
@@ -659,28 +501,8 @@ export async function verifyPostgresSchema(
       throw new DatabaseConfigurationError('PostgreSQL runtime role lacks required VoxMitra schema or table privileges.');
     }
   } catch (error) {
-    if (error instanceof PostgresStartupDiagnosticError) throw error;
-    if (error instanceof DatabaseConfigurationError) {
-      const diagnostic = classifyConfigurationError(error);
-      if (diagnostic) {
-        throw new PostgresStartupDiagnosticError(
-          diagnostic.category,
-          diagnostic.message,
-          undefined,
-          diagnostic.check
-        );
-      }
-      throw new PostgresStartupDiagnosticError(
-        'unknown',
-        'PostgreSQL connection or schema verification failed.'
-      );
-    }
-    const diagnostic = classifyPostgresError(error);
-    throw new PostgresStartupDiagnosticError(
-      diagnostic.category,
-      'PostgreSQL connection or schema verification failed.',
-      diagnostic.code
-    );
+    if (error instanceof DatabaseConfigurationError) throw error;
+    throw new DatabaseConfigurationError('PostgreSQL connection or schema verification failed.');
   }
 }
 

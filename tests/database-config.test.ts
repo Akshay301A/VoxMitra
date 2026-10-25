@@ -10,7 +10,6 @@ import {
 import {
   checkPostgresConnection,
   createPostgresPoolOptions,
-  PostgresStartupDiagnosticError,
   verifyPostgresSchema,
 } from '../server/db/postgres-pool.ts';
 
@@ -179,168 +178,6 @@ test('PostgreSQL schema check verifies all required tables and columns safely', 
   );
 });
 
-test('PostgreSQL startup diagnostics classify known connection errors without exposing messages', async () => {
-  const cases = [
-    { code: 'SELF_SIGNED_CERT_IN_CHAIN', category: 'tls' },
-    { code: '28P01', category: 'authentication' },
-    { code: 'ECONNREFUSED', category: 'network' },
-    { code: '3D000', category: 'database-not-found' },
-    { code: '42501', category: 'permission' },
-  ];
-
-  for (const { code, category } of cases) {
-    await assert.rejects(
-      verifyPostgresSchema({
-        async query() {
-          throw Object.assign(
-            new Error('sensitive message with host, username, password, and connection URL'),
-            { code }
-          );
-        },
-      }),
-      (error: unknown) =>
-        error instanceof PostgresStartupDiagnosticError &&
-        error.category === category &&
-        error.code === code &&
-        !error.message.includes('sensitive') &&
-        !error.message.includes('password') &&
-        !error.message.includes('connection URL')
-    );
-  }
-});
-
-test('PostgreSQL startup diagnostics identify each failed schema check with a fixed identifier', async () => {
-  const tables = [
-    'businesses', 'users', 'agents', 'agent_configurations', 'call_records',
-    'callbacks', 'integrations', 'usage_records', 'wallets', 'wallet_transactions',
-    'wallet_reservations', 'wallet_autotopup_settings', 'payment_orders',
-    'billing_configs', 'wallet_notifications', 'campaigns', 'leads',
-    'knowledge_sources', 'onboarding',
-  ].map((table_name) => ({ table_name }));
-  const failingChecks = [
-    {
-      check: 'required-tables',
-      fails(text: string) { return text.includes('information_schema.tables'); },
-      failureRows: [] as Record<string, unknown>[],
-    },
-    {
-      check: 'required-columns',
-      fails(text: string) {
-        return text.includes('information_schema.columns') &&
-          !text.includes('unnest($1::text[], $2::text[], $3::text[])');
-      },
-      failureRows: [{ table_name: 'hidden_table', column_name: 'hidden_column' }],
-    },
-    {
-      check: 'column-types',
-      fails(text: string) {
-        return text.includes('information_schema.columns') &&
-          text.includes('unnest($1::text[], $2::text[], $3::text[])');
-      },
-      failureRows: [{ table_name: 'hidden_table', column_name: 'hidden_column' }],
-    },
-    {
-      check: 'key-tenant-constraints',
-      fails(text: string) { return text.includes('pg_constraint'); },
-      failureRows: [{ table_name: 'hidden_table', constraint_name: 'hidden_constraint' }],
-    },
-    {
-      check: 'required-indexes',
-      fails(text: string) { return text.includes('pg_indexes'); },
-      failureRows: [{ index_name: 'hidden_index' }],
-    },
-  ] as const;
-
-  for (const failingCheck of failingChecks) {
-    await assert.rejects(
-      verifyPostgresSchema({
-        async query(text) {
-          if (text === 'SELECT 1') return { rows: [] };
-          if (failingCheck.fails(text)) return { rows: [...failingCheck.failureRows] };
-          if (text.includes('information_schema.tables')) return { rows: tables };
-          return { rows: [] };
-        },
-      }),
-      (error: unknown) =>
-        error instanceof PostgresStartupDiagnosticError &&
-        error.category === 'schema' &&
-        error.check === failingCheck.check &&
-        !error.message.includes('hidden')
-    );
-  }
-});
-
-test('PostgreSQL startup diagnostics identify a missing required column by allowlisted identifier', async () => {
-  const tables = [
-    'businesses', 'users', 'agents', 'agent_configurations', 'call_records',
-    'callbacks', 'integrations', 'usage_records', 'wallets', 'wallet_transactions',
-    'wallet_reservations', 'wallet_autotopup_settings', 'payment_orders',
-    'billing_configs', 'wallet_notifications', 'campaigns', 'leads',
-    'knowledge_sources', 'onboarding',
-  ].map((table_name) => ({ table_name }));
-
-  await assert.rejects(
-    verifyPostgresSchema({
-      async query(text) {
-        if (text === 'SELECT 1') return { rows: [] };
-        if (text.includes('information_schema.tables')) return { rows: tables };
-        if (
-          text.includes('information_schema.columns') &&
-          !text.includes('unnest($1::text[], $2::text[], $3::text[])')
-        ) {
-          return {
-            rows: [{
-              table_name: 'agents',
-              column_name: 'inbound_phone_number',
-            }],
-          };
-        }
-        return { rows: [] };
-      },
-    }),
-    (error: unknown) =>
-      error instanceof PostgresStartupDiagnosticError &&
-      error.category === 'schema' &&
-      error.check === 'required-columns' &&
-      error.item === 'agents.inbound_phone_number' &&
-      !error.message.includes('agents')
-  );
-});
-
-test('PostgreSQL startup diagnostics use the generic fallback for unknown errors', async () => {
-  await assert.rejects(
-    verifyPostgresSchema({
-      async query() {
-        throw new Error('sensitive connection string and API key');
-      },
-    }),
-    (error: unknown) =>
-      error instanceof PostgresStartupDiagnosticError &&
-      error.category === 'unknown' &&
-      error.code === undefined &&
-      error.message === 'PostgreSQL connection or schema verification failed.' &&
-      !error.message.includes('sensitive') &&
-      !error.message.includes('API key')
-  );
-});
-
-test('PostgreSQL startup diagnostics reject arbitrary error codes', async () => {
-  await assert.rejects(
-    verifyPostgresSchema({
-      async query() {
-        throw Object.assign(new Error('private data in message'), {
-          code: 'private-data-in-code',
-        });
-      },
-    }),
-    (error: unknown) =>
-      error instanceof PostgresStartupDiagnosticError &&
-      error.category === 'unknown' &&
-      error.code === undefined &&
-      !error.message.includes('private')
-  );
-});
-
 test('PostgreSQL schema check rejects incompatible identifier and JSONB column types', async () => {
   await assert.rejects(
     verifyPostgresSchema({
@@ -454,8 +291,6 @@ test('PostgreSQL startup refuses to run while Supabase client roles can access t
     }),
     (error: unknown) =>
       error instanceof DatabaseConfigurationError &&
-      error instanceof PostgresStartupDiagnosticError &&
-      error.check === 'supabase-client-access-lockdown' &&
       error.message.includes('access lockdown')
   );
 });
@@ -499,9 +334,7 @@ test('PostgreSQL startup refuses an application role without VoxMitra table gran
       },
     }),
     (error: unknown) =>
-      error instanceof PostgresStartupDiagnosticError &&
-      error.category === 'permission' &&
-      error.check === 'runtime-role-grants' &&
+      error instanceof DatabaseConfigurationError &&
       error.message.includes('runtime role lacks')
   );
 });
