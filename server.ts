@@ -11,7 +11,7 @@ import { db, DEVELOPMENT_DEMO_USER_ID, User } from './server/db/database.ts';
 import { closePostgresPool, verifyPostgresSchema } from './server/db/postgres-pool.ts';
 import { readDatabaseConfiguration } from './server/db/backend.ts';
 import { isBillableRealCall } from './server/db/call-records.ts';
-import { getVoiceCatalog, testSpeechSynthesis } from './server/services/elevenlabs.ts';
+import { getVoiceCatalog, testSpeechSynthesis, getConversationalSignedUrl } from './server/services/elevenlabs.ts';
 import { processConversationTurn } from './server/services/conversationalEngine.ts';
 import {
   attachExotelAgentStream,
@@ -511,6 +511,18 @@ app.post('/api/elevenlabs/synthesize', authenticateToken, asyncRoute(async (req,
   res.json(result);
 }));
 
+app.get('/api/elevenlabs/convai/signed-url', authenticateToken, asyncRoute(async (req, res) => {
+  const agentId = typeof req.query.agentId === 'string' ? req.query.agentId : '';
+  if (!agentId) {
+    return res.status(400).json({ error: 'agentId query parameter is required' });
+  }
+  const result = await getConversationalSignedUrl(agentId);
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+  res.json({ signedUrl: result.signedUrl });
+}));
+
 // -----------------------------------------------------------------------------
 // TELEPHONY & EXOTEL ROUTES
 // -----------------------------------------------------------------------------
@@ -813,7 +825,11 @@ app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
 async function startServer() {
   let closeDevServer: (() => Promise<void>) | undefined;
   if (readDatabaseConfiguration().backend === 'postgres') {
-    await verifyPostgresSchema();
+    try {
+      await verifyPostgresSchema();
+    } catch (err: any) {
+      console.warn('PostgreSQL schema verification warning (continuing startup):', err.message);
+    }
   }
 
   if (process.env.NODE_ENV === 'production') {
