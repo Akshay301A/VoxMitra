@@ -182,3 +182,39 @@ export async function testSpeechSynthesis(voiceId: string, text: string): Promis
     return { success: false, error: 'ElevenLabs synthesis request failed.' };
   }
 }
+
+/**
+ * Generate a secure signed URL or conversation token for ElevenLabs Conversational AI WebSocket connection.
+ * Strictly uses server-side process.env.ELEVENLABS_API_KEY without exposing it to the frontend.
+ */
+export async function getConversationalSignedUrl(agentId: string): Promise<{ signedUrl?: string; error?: string }> {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    return { error: 'ELEVENLABS_API_KEY is not configured in the server environment.' };
+  }
+  if (!agentId || !agentId.trim()) {
+    return { error: 'ElevenLabs Agent ID is required.' };
+  }
+
+  try {
+    const response = await fetch(`https://api.elevenlabs.io/v1/convai/conversation/get_signed_url?agent_id=${encodeURIComponent(agentId.trim())}`, {
+      method: 'GET',
+      headers: {
+        'xi-api-key': apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      return { error: `ElevenLabs conversational signed URL request failed with status ${response.status}: ${errText}` };
+    }
+
+    const data: any = await response.json();
+    if (data && data.signed_url) {
+      return { signedUrl: data.signed_url };
+    }
+    return { error: 'Invalid response structure from ElevenLabs signed URL API.' };
+  } catch (err: any) {
+    return { error: err.message || 'Failed to connect to ElevenLabs Conversational AI API.' };
+  }
+}

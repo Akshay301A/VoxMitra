@@ -71,6 +71,7 @@ export interface AgentConfig {
   contact_fields_to_collect: ContactField[];
   business_faqs: FAQItem[];
   agent_plan?: AgentPlan;
+  elevenlabs_agent_id?: string;
   webhook_url: string;
   created_at: string;
   updated_at: string;

@@ -257,6 +257,10 @@ export const api = {
     });
   },
 
+  async getConvaiSignedUrl(agentId: string): Promise<{ signedUrl: string }> {
+    return request(`/api/elevenlabs/convai/signed-url?agentId=${encodeURIComponent(agentId)}`);
+  },
+
   // Telephony
   async getTelephonyStatus(): Promise<{
     configured: boolean;
