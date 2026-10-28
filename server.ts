@@ -828,7 +828,11 @@ async function startServer() {
     try {
       await verifyPostgresSchema();
     } catch (err: any) {
-      console.warn('PostgreSQL schema verification warning (continuing startup):', err.message);
+      console.warn(
+        'PostgreSQL schema verification warning (continuing startup):',
+        err?.message || err,
+        err?.code ? `[code: ${err.code}]` : ''
+      );
     }
   }
 
