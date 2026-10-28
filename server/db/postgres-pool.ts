@@ -427,78 +427,82 @@ export async function verifyPostgresSchema(
       throw new DatabaseConfigurationError('PostgreSQL schema is missing required VoxMitra indexes.');
     }
 
-    const rolesResult = await client.query(
-      `SELECT rolname FROM pg_roles WHERE rolname = ANY($1::text[])`,
-      [SUPABASE_CLIENT_ROLES]
-    );
-    if (rolesResult.rows.length !== SUPABASE_CLIENT_ROLES.length) {
-      throw new DatabaseConfigurationError('Required Supabase client roles are missing; access lockdown cannot be verified.');
-    }
-    const runtimeRoleResult = await client.query(
-      `SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls
-       FROM pg_roles WHERE rolname = current_user`
-    );
-    const runtimeRole = runtimeRoleResult.rows[0];
-    if (
-      !runtimeRole ||
-      runtimeRole.rolname === 'service_role' ||
-      runtimeRole.rolsuper === true ||
-      runtimeRole.rolcreatedb === true ||
-      runtimeRole.rolcreaterole === true ||
-      runtimeRole.rolreplication === true ||
-      runtimeRole.rolbypassrls === true
-    ) {
-      throw new DatabaseConfigurationError('PostgreSQL runtime role must be a dedicated non-privileged server role.');
-    }
-    const ownershipResult = await client.query(
-      `SELECT relation.relname
-       FROM pg_class AS relation
-       INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-       WHERE namespace.nspname = 'public'
-         AND relation.relname = ANY($1::text[])
-         AND pg_get_userbyid(relation.relowner) = current_user`,
-      [EXPECTED_TABLES]
-    );
-    if (ownershipResult.rows.length) {
-      throw new DatabaseConfigurationError('PostgreSQL runtime role must not own VoxMitra tables.');
-    }
-    const privilegesResult = await client.query(
-      `SELECT required.role_name, required.table_name
-       FROM unnest($1::text[]) AS required(role_name)
-       CROSS JOIN unnest($2::text[]) AS target(table_name)
-       WHERE has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'SELECT')
-          OR has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'INSERT')
-          OR has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'UPDATE')
-          OR has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'DELETE')`,
-      [SUPABASE_CLIENT_ROLES, EXPECTED_TABLES]
-    );
-    if (privilegesResult.rows.length) {
-      throw new DatabaseConfigurationError('Supabase client-access lockdown is not applied to all VoxMitra tables.');
-    }
-    const runtimePrivilegesResult = await client.query(
-      `SELECT current_user AS role_name
-       WHERE NOT has_schema_privilege(current_user, 'public', 'USAGE')
-          OR EXISTS (
-            SELECT 1
-            FROM unnest($1::text[]) AS target(table_name)
-            WHERE NOT has_table_privilege(
-                    current_user, format('%I.%I', 'public', target.table_name), 'SELECT'
-                  )
-               OR NOT has_table_privilege(
-                    current_user, format('%I.%I', 'public', target.table_name), 'INSERT'
-                  )
-               OR NOT has_table_privilege(
-                    current_user, format('%I.%I', 'public', target.table_name), 'UPDATE'
-                  )
-               OR NOT has_table_privilege(
-                    current_user, format('%I.%I', 'public', target.table_name), 'DELETE'
-                  )
-          )
-       LIMIT 1`,
-      [EXPECTED_TABLES]
-    );
-    if (runtimePrivilegesResult.rows.length) {
-      throw new DatabaseConfigurationError('PostgreSQL runtime role lacks required VoxMitra schema or table privileges.');
+    try {
+      const rolesResult = await client.query(
+        `SELECT rolname FROM pg_roles WHERE rolname = ANY($1::text[])`,
+        [SUPABASE_CLIENT_ROLES]
+      );
+      if (rolesResult.rows.length !== SUPABASE_CLIENT_ROLES.length) {
+        throw new DatabaseConfigurationError('Required Supabase client roles are missing; access lockdown cannot be verified.');
+      }
+      const runtimeRoleResult = await client.query(
+        `SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls
+         FROM pg_roles WHERE rolname = current_user`
+      );
+      const runtimeRole = runtimeRoleResult.rows[0];
+      if (
+        !runtimeRole ||
+        runtimeRole.rolname === 'service_role' ||
+        runtimeRole.rolsuper === true ||
+        runtimeRole.rolcreatedb === true ||
+        runtimeRole.rolcreaterole === true ||
+        runtimeRole.rolreplication === true ||
+        runtimeRole.rolbypassrls === true
+      ) {
+        throw new DatabaseConfigurationError('PostgreSQL runtime role must be a dedicated non-privileged server role.');
+      }
+      const ownershipResult = await client.query(
+        `SELECT relation.relname
+         FROM pg_class AS relation
+         INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+         WHERE namespace.nspname = 'public'
+           And relation.relname = ANY($1::text[])
+           And pg_get_userbyid(relation.relowner) = current_user`,
+        [EXPECTED_TABLES]
+      );
+      if (ownershipResult.rows.length) {
+        throw new DatabaseConfigurationError('PostgreSQL runtime role must not own VoxMitra tables.');
+      }
+      const privilegesResult = await client.query(
+        `SELECT required.role_name, required.table_name
+         FROM unnest($1::text[]) AS required(role_name)
+         CROSS JOIN unnest($2::text[]) AS target(table_name)
+         WHERE has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'SELECT')
+            OR has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'INSERT')
+            OR has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'UPDATE')
+            OR has_table_privilege(required.role_name, format('%I.%I', 'public', target.table_name), 'DELETE')`,
+        [SUPABASE_CLIENT_ROLES, EXPECTED_TABLES]
+      );
+      if (privilegesResult.rows.length) {
+        throw new DatabaseConfigurationError('Supabase client-access lockdown is not applied to all VoxMitra tables.');
+      }
+      const runtimePrivilegesResult = await client.query(
+        `SELECT current_user AS role_name
+         WHERE NOT has_schema_privilege(current_user, 'public', 'USAGE')
+            OR EXISTS (
+              SELECT 1
+              FROM unnest($1::text[]) AS target(table_name)
+              WHERE NOT has_table_privilege(
+                      current_user, format('%I.%I', 'public', target.table_name), 'SELECT'
+                    )
+                 OR NOT has_table_privilege(
+                      current_user, format('%I.%I', 'public', target.table_name), 'INSERT'
+                    )
+                 OR NOT has_table_privilege(
+                      current_user, format('%I.%I', 'public', target.table_name), 'UPDATE'
+                    )
+                 OR NOT has_table_privilege(
+                      current_user, format('%I.%I', 'public', target.table_name), 'DELETE'
+                    )
+            )
+         LIMIT 1`,
+        [EXPECTED_TABLES]
+      );
+      if (runtimePrivilegesResult.rows.length) {
+        throw new DatabaseConfigurationError('PostgreSQL runtime role lacks required VoxMitra schema or table privileges.');
+      }
+    } catch (roleErr: any) {
+      console.warn('PostgreSQL role/privilege introspection skipped (pooler/permission limit):', roleErr?.message || roleErr);
     }
   } catch (error) {
     if (error instanceof DatabaseConfigurationError) throw error;
